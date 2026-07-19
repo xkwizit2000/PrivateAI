@@ -8,11 +8,16 @@ from .agent import run_agent
 from .config import (
     ALLOWED_USER_ID,
     MCP_CONFIG_PATH,
+    MEMORY_DIR,
+    MEMORY_MAX_CONTEXT_CHARS,
+    MEMORY_RECENT_TURNS,
+    MEMORY_SUMMARIZE_EVERY,
     OLLAMA_MODEL,
     TELEGRAM_MAX_MESSAGE_LENGTH,
     TELEGRAM_TOKEN,
 )
 from .mcp_client import McpHub
+from .memory import MemoryStore
 
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -39,9 +44,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_chat_action(action=ChatAction.TYPING)
     user_prompt = update.message.text or ""
     hub: McpHub | None = context.application.bot_data.get("mcp_hub")
+    memory: MemoryStore | None = context.application.bot_data.get("memory")
+    session_id = (
+        update.effective_chat.id
+        if update.effective_chat is not None
+        else update.effective_user.id
+    )
 
     try:
-        response = await run_agent(user_prompt, hub=hub, model=OLLAMA_MODEL)
+        response = await run_agent(
+            user_prompt,
+            hub=hub,
+            model=OLLAMA_MODEL,
+            memory=memory,
+            session_id=session_id,
+        )
         for part in chunk_text(response):
             await update.message.reply_text(part)
     except Exception:
@@ -52,6 +69,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def post_init(app: Application) -> None:
+    app.bot_data["memory"] = MemoryStore(
+        MEMORY_DIR,
+        recent_turns=MEMORY_RECENT_TURNS,
+        summarize_every=MEMORY_SUMMARIZE_EVERY,
+        max_context_chars=MEMORY_MAX_CONTEXT_CHARS,
+    )
+    logger.info("Durable conversation memory enabled at %s", MEMORY_DIR)
+
     hub = McpHub(MCP_CONFIG_PATH)
     await hub.start()
     app.bot_data["mcp_hub"] = hub

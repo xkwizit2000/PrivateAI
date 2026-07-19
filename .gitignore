@@ -2,6 +2,7 @@
 .env
 mcp.json
 *.local
+data/
 
 # Python environment files
 __pycache__/
