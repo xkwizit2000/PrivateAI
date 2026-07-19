@@ -1,6 +1,9 @@
+import asyncio
 import logging
+from contextlib import suppress
+from time import monotonic
 
-from telegram import Update
+from telegram import Message, Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
@@ -23,7 +26,15 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
+# httpx logs full request URLs; Telegram embeds the bot token in the path.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+
+# Telegram drops the typing indicator after ~5s; refresh before that.
+TYPING_REFRESH_SECONDS = 4.0
+# Edit the temporary progress message often enough to show the bot is alive.
+STATUS_REFRESH_SECONDS = 5.0
 
 
 def chunk_text(text: str, limit: int = TELEGRAM_MAX_MESSAGE_LENGTH) -> list[str]:
@@ -31,6 +42,18 @@ def chunk_text(text: str, limit: int = TELEGRAM_MAX_MESSAGE_LENGTH) -> list[str]
     if len(text) <= limit:
         return [text]
     return [text[i : i + limit] for i in range(0, len(text), limit)]
+
+
+async def keep_typing(message: Message) -> None:
+    """Resend ChatAction.TYPING until cancelled."""
+    try:
+        while True:
+            await message.reply_chat_action(action=ChatAction.TYPING)
+            await asyncio.sleep(TYPING_REFRESH_SECONDS)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.debug("Typing indicator refresh failed", exc_info=True)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -41,7 +64,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Access Denied: Unauthorized Linux Admin.")
         return
 
-    await update.message.reply_chat_action(action=ChatAction.TYPING)
     user_prompt = update.message.text or ""
     hub: McpHub | None = context.application.bot_data.get("mcp_hub")
     memory: MemoryStore | None = context.application.bot_data.get("memory")
@@ -51,6 +73,50 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         else update.effective_user.id
     )
 
+    status_started = monotonic()
+    progress_stage = "thinking"
+    progress_detail: str | None = None
+    displayed_status = "🤔 Thinking…\nStill working — 0s elapsed"
+    status_message = await update.message.reply_text(displayed_status)
+    status_lock = asyncio.Lock()
+    typing_task: asyncio.Task[None] | None = None
+
+    def render_status() -> str:
+        elapsed = int(monotonic() - status_started)
+        if progress_stage == "processing":
+            label = f"⚙️ Processing: {progress_detail or 'tool'}…"
+        elif progress_stage == "responding":
+            label = "✍️ Preparing response…"
+        else:
+            label = "🤔 Thinking…"
+        return f"{label}\nStill working — {elapsed}s elapsed"
+
+    async def update_status() -> None:
+        nonlocal displayed_status
+        async with status_lock:
+            next_status = render_status()
+            if next_status == displayed_status:
+                return
+            try:
+                await status_message.edit_text(next_status)
+                displayed_status = next_status
+            except Exception:
+                logger.debug("Progress status update failed", exc_info=True)
+
+    async def refresh_status() -> None:
+        while True:
+            await asyncio.sleep(STATUS_REFRESH_SECONDS)
+            await update_status()
+
+    async def report_progress(stage: str, detail: str | None) -> None:
+        nonlocal progress_stage, progress_detail, typing_task
+        progress_stage = stage
+        progress_detail = detail
+        if stage == "responding" and typing_task is None:
+            typing_task = asyncio.create_task(keep_typing(update.message))
+        await update_status()
+
+    status_task = asyncio.create_task(refresh_status())
     try:
         response = await run_agent(
             user_prompt,
@@ -58,6 +124,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             model=OLLAMA_MODEL,
             memory=memory,
             session_id=session_id,
+            progress=report_progress,
         )
         for part in chunk_text(response):
             await update.message.reply_text(part)
@@ -66,6 +133,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(
             "System Error: the agent request failed. Check server logs for details."
         )
+    finally:
+        status_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await status_task
+        if typing_task is not None:
+            typing_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await typing_task
+        try:
+            await status_message.delete()
+        except Exception:
+            logger.debug("Progress status cleanup failed", exc_info=True)
 
 
 async def post_init(app: Application) -> None:

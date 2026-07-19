@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ollama import AsyncClient
@@ -13,6 +14,7 @@ from .mcp_client import McpHub
 from .memory import MemoryStore
 
 logger = logging.getLogger(__name__)
+ProgressCallback = Callable[[str, str | None], Awaitable[None]]
 
 SYSTEM_PROMPT = """You are PrivateAI, a personal Linux administration assistant.
 
@@ -75,6 +77,7 @@ async def run_agent(
     model: str = OLLAMA_MODEL,
     memory: MemoryStore | None = None,
     session_id: str | int | None = None,
+    progress: ProgressCallback | None = None,
 ) -> str:
     """Run one user turn, optionally using MCP tools via Ollama tool calling."""
     client = AsyncClient(host=OLLAMA_HOST)
@@ -87,6 +90,8 @@ async def run_agent(
 
     for iteration in range(MAX_TOOL_ITERATIONS):
         logger.info("Agent iteration %d/%d", iteration + 1, MAX_TOOL_ITERATIONS)
+        if progress is not None:
+            await progress("thinking", None)
         response = await client.chat(
             model=model,
             messages=messages,
@@ -98,12 +103,16 @@ async def run_agent(
         tool_calls = getattr(message, "tool_calls", None) or []
         if not tool_calls:
             final_response = (message.content or "").strip() or "(empty model response)"
+            if progress is not None:
+                await progress("responding", None)
             return await _remember_response(
                 memory, session_id, user_prompt, final_response, model
             )
 
         if hub is None:
             final_response = "Model requested tools, but no MCP servers are configured."
+            if progress is not None:
+                await progress("responding", None)
             return await _remember_response(
                 memory, session_id, user_prompt, final_response, model
             )
@@ -114,6 +123,8 @@ async def run_agent(
             arguments = function.arguments or {}
             if not isinstance(arguments, dict):
                 arguments = dict(arguments)
+            if progress is not None:
+                await progress("processing", name)
             tool_result = await hub.call_tool(name, arguments)
             messages.append(
                 {
@@ -126,6 +137,8 @@ async def run_agent(
         "Stopped after too many tool iterations. "
         "Narrow the request or raise MAX_TOOL_ITERATIONS."
     )
+    if progress is not None:
+        await progress("responding", None)
     return await _remember_response(
         memory, session_id, user_prompt, final_response, model
     )

@@ -1,0 +1,22 @@
+services:
+  privateai:
+    build: .
+    image: privateai:latest
+    container_name: privateai
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Reach an Ollama server running on the Docker host by default.
+      # Override with a remote GPU host, e.g. http://gpu-server.internal:11434
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://10.0.0.37:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # MCP tool configuration (read-only inside the container).
+      - ./mcp.json:/app/mcp.json:ro
+      # Durable conversation memory.
+      - ./workingdir:/workingdir
+
+volumes:
+  privateai-data:
