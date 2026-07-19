@@ -1,0 +1,18 @@
+# Configuration and Environment
+.env
+mcp.json
+*.local
+data/
+
+# Python environment files
+__pycache__/
+*.py[cod]
+.venv/
+env/
+build/
+dist/
+
+# OS files
+.DS_Store
+.thumbs
+
