@@ -76,7 +76,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     status_started = monotonic()
     progress_stage = "thinking"
     progress_detail: str | None = None
-    displayed_status = "🤔 Thinking…\nStill working — 0s elapsed"
+    displayed_status = "🤔 Thinking…\nStill thinking — 0s elapsed"
     status_message = await update.message.reply_text(displayed_status)
     status_lock = asyncio.Lock()
     typing_task: asyncio.Task[None] | None = None
@@ -89,7 +89,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             label = "✍️ Preparing response…"
         else:
             label = "🤔 Thinking…"
-        return f"{label}\nStill working — {elapsed}s elapsed"
+        return f"{label}\nStill thinking — {elapsed}s elapsed"
 
     async def update_status() -> None:
         nonlocal displayed_status
