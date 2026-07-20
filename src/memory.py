@@ -78,6 +78,21 @@ class MemoryStore:
             logger.exception("Unable to read transcript at %s", path)
         return records
 
+    def list_session_ids(self) -> list[str]:
+        """Return numeric session IDs that have transcript files."""
+        ids: list[str] = []
+        for path in sorted(self.data_dir.glob("*.jsonl")):
+            stem = path.stem
+            if stem.lstrip("-").isdigit():
+                ids.append(stem)
+        return ids
+
+    async def load_transcript(self, session_id: str | int) -> list[dict[str, Any]]:
+        """Load the append-only transcript for a session."""
+        transcript_path, _ = self._paths(session_id)
+        async with self._lock(session_id):
+            return self._read_records(transcript_path)
+
     async def context_messages(self, session_id: str | int) -> list[dict[str, str]]:
         """Return rolling summary and recent turns for the next model prompt."""
         transcript_path, summary_path = self._paths(session_id)

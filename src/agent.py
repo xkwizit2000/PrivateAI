@@ -5,18 +5,29 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
+from time import monotonic
 from typing import Any
 
 from ollama import AsyncClient
 
-from .config import MAX_TOOL_ITERATIONS, OLLAMA_HOST, OLLAMA_MODEL
+from .config import (
+    MAX_TOOL_ITERATIONS,
+    MEMORY_RECENT_TURNS,
+    OLLAMA_HOST,
+    OLLAMA_MODEL,
+    OLLAMA_STUCK_WARN_SECONDS,
+    OLLAMA_THINK,
+    OLLAMA_TIMEOUT_SECONDS,
+)
 from .mcp_client import McpHub
 from .memory import MemoryStore
+from .rag import RagStore
 
 logger = logging.getLogger(__name__)
 ProgressCallback = Callable[[str, str | None], Awaitable[None]]
 
-SYSTEM_PROMPT = """You are PrivateAI, a personal Linux administration assistant.
+SYSTEM_PROMPT = """You are PrivateAI, a personal Systems, Security, AI, Automation, Options trading, and strategy development assistant.
 
 You may use MCP tools when they help answer the user accurately.
 Prefer inspection and read-only tools before any write or destructive action.
@@ -42,15 +53,206 @@ def _message_to_dict(message: Any) -> dict[str, Any]:
     return data
 
 
-def _log_background_failure(task: asyncio.Task[bool]) -> None:
+def _ns_to_s(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value) / 1_000_000_000.0
+    except (TypeError, ValueError):
+        return None
+
+
+def _rate(count: Any, duration_ns: Any) -> float | None:
+    seconds = _ns_to_s(duration_ns)
+    if seconds is None or seconds <= 0 or count is None:
+        return None
+    try:
+        return float(count) / seconds
+    except (TypeError, ValueError):
+        return None
+
+
+def _log_ollama_stats(response: Any, *, model: str, wall_s: float) -> None:
+    """Log Ollama timing/token stats from a chat response."""
+    total_s = _ns_to_s(getattr(response, "total_duration", None))
+    load_s = _ns_to_s(getattr(response, "load_duration", None))
+    prompt_s = _ns_to_s(getattr(response, "prompt_eval_duration", None))
+    eval_s = _ns_to_s(getattr(response, "eval_duration", None))
+    prompt_tokens = getattr(response, "prompt_eval_count", None)
+    eval_tokens = getattr(response, "eval_count", None)
+    prompt_tok_s = _rate(prompt_tokens, getattr(response, "prompt_eval_duration", None))
+    eval_tok_s = _rate(eval_tokens, getattr(response, "eval_duration", None))
+    done_reason = getattr(response, "done_reason", None)
+
+    logger.info(
+        "Ollama stats model=%s wall=%.2fs total=%s load=%s "
+        "prompt_tokens=%s prompt_s=%s prompt_tok/s=%s "
+        "gen_tokens=%s gen_s=%s gen_tok/s=%s done_reason=%s",
+        model,
+        wall_s,
+        f"{total_s:.2f}s" if total_s is not None else "n/a",
+        f"{load_s:.2f}s" if load_s is not None else "n/a",
+        prompt_tokens if prompt_tokens is not None else "n/a",
+        f"{prompt_s:.2f}s" if prompt_s is not None else "n/a",
+        f"{prompt_tok_s:.1f}" if prompt_tok_s is not None else "n/a",
+        eval_tokens if eval_tokens is not None else "n/a",
+        f"{eval_s:.2f}s" if eval_s is not None else "n/a",
+        f"{eval_tok_s:.1f}" if eval_tok_s is not None else "n/a",
+        done_reason if done_reason is not None else "n/a",
+    )
+
+
+async def _watch_for_stall(model: str, started: float, timeout_seconds: float) -> None:
+    """Periodically warn while an Ollama chat call has not returned."""
+    try:
+        while True:
+            await asyncio.sleep(OLLAMA_STUCK_WARN_SECONDS)
+            waited = monotonic() - started
+            logger.warning(
+                "Ollama model appears stuck: model=%s waited=%.0fs "
+                "(still waiting for chat response; will time out at %.0fs)",
+                model,
+                waited,
+                timeout_seconds,
+            )
+    except asyncio.CancelledError:
+        raise
+
+
+async def _chat_with_monitoring(
+    client: AsyncClient,
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    think: bool,
+    timeout_seconds: float,
+    progress: ProgressCallback | None = None,
+    verbose: bool = False,
+) -> Any:
+    """Call Ollama chat with stall warnings, timeout, and performance logging."""
+    started = monotonic()
+    watcher = asyncio.create_task(_watch_for_stall(model, started, timeout_seconds))
+    stream_reasoning = bool(think and verbose and progress is not None)
+
+    async def _non_stream() -> Any:
+        return await client.chat(
+            model=model,
+            messages=messages,
+            tools=tools,
+            think=think,
+        )
+
+    async def _stream() -> Any:
+        assert progress is not None
+        stream = await client.chat(
+            model=model,
+            messages=messages,
+            tools=tools,
+            think=think,
+            stream=True,
+        )
+        thinking_parts: list[str] = []
+        content_parts: list[str] = []
+        tool_calls: Any = None
+        last_chunk: Any = None
+        last_progress_at = 0.0
+
+        async for chunk in stream:
+            last_chunk = chunk
+            message = chunk.message
+            thinking_piece = getattr(message, "thinking", None)
+            if thinking_piece:
+                thinking_parts.append(str(thinking_piece))
+                now = monotonic()
+                if now - last_progress_at >= 2.0:
+                    excerpt = "".join(thinking_parts)[-700:]
+                    await progress("reasoning", excerpt)
+                    last_progress_at = now
+            content_piece = getattr(message, "content", None)
+            if content_piece:
+                content_parts.append(str(content_piece))
+            calls = getattr(message, "tool_calls", None)
+            if calls:
+                tool_calls = calls
+
+        if thinking_parts:
+            await progress("reasoning", "".join(thinking_parts)[-700:])
+
+        if last_chunk is None:
+            raise RuntimeError("Ollama stream returned no chunks")
+
+        # Prefer the final streamed message when present; fall back to assembled text.
+        final_message = getattr(last_chunk, "message", None)
+        content = "".join(content_parts)
+        thinking = "".join(thinking_parts)
+        if final_message is not None:
+            if getattr(final_message, "content", None):
+                content = str(final_message.content)
+            if getattr(final_message, "thinking", None):
+                thinking = str(final_message.thinking)
+            if getattr(final_message, "tool_calls", None):
+                tool_calls = final_message.tool_calls
+
+        from types import SimpleNamespace
+
+        assembled_message = SimpleNamespace(
+            role="assistant",
+            content=content or None,
+            thinking=thinking or None,
+            tool_calls=tool_calls,
+        )
+        return SimpleNamespace(
+            model=getattr(last_chunk, "model", model),
+            created_at=getattr(last_chunk, "created_at", None),
+            done=getattr(last_chunk, "done", True),
+            done_reason=getattr(last_chunk, "done_reason", None),
+            total_duration=getattr(last_chunk, "total_duration", None),
+            load_duration=getattr(last_chunk, "load_duration", None),
+            prompt_eval_count=getattr(last_chunk, "prompt_eval_count", None),
+            prompt_eval_duration=getattr(last_chunk, "prompt_eval_duration", None),
+            eval_count=getattr(last_chunk, "eval_count", None),
+            eval_duration=getattr(last_chunk, "eval_duration", None),
+            message=assembled_message,
+        )
+
+    try:
+        response = await asyncio.wait_for(
+            _stream() if stream_reasoning else _non_stream(),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError as exc:
+        waited = monotonic() - started
+        logger.error(
+            "Ollama chat timed out: model=%s waited=%.0fs timeout=%.0fs "
+            "(model may be stuck; check ollama on %s)",
+            model,
+            waited,
+            timeout_seconds,
+            OLLAMA_HOST,
+        )
+        raise TimeoutError(
+            f"Ollama model '{model}' timed out after {int(waited)}s"
+        ) from exc
+    finally:
+        watcher.cancel()
+        with suppress(asyncio.CancelledError):
+            await watcher
+
+    _log_ollama_stats(response, model=model, wall_s=monotonic() - started)
+    return response
+
+
+def _log_background_failure(task: asyncio.Task[Any]) -> None:
     try:
         task.result()
     except Exception:
-        logger.exception("Background memory summarization failed")
+        logger.exception("Background memory task failed")
 
 
 async def _remember_response(
     memory: MemoryStore | None,
+    rag: RagStore | None,
     session_id: str | int | None,
     user_prompt: str,
     response: str,
@@ -68,7 +270,38 @@ async def _remember_response(
         )
     )
     task.add_done_callback(_log_background_failure)
+
+    if rag is not None:
+        index_task = asyncio.create_task(
+            rag.index_turn(session_id, user_prompt, response)
+        )
+        index_task.add_done_callback(_log_background_failure)
+
     return response
+
+
+async def _rag_context_message(
+    rag: RagStore,
+    memory: MemoryStore | None,
+    session_id: str | int,
+    user_prompt: str,
+) -> dict[str, str] | None:
+    exclude_texts: list[str] = []
+    if memory is not None:
+        records = await memory.load_transcript(session_id)
+        exclude_texts = rag.recent_exclude_texts(
+            records, recent_turns=MEMORY_RECENT_TURNS
+        )
+
+    snippets = await rag.retrieve(
+        session_id,
+        user_prompt,
+        exclude_texts=exclude_texts,
+    )
+    formatted = rag.format_context(snippets)
+    if not formatted:
+        return None
+    return {"role": "system", "content": formatted}
 
 
 async def run_agent(
@@ -76,27 +309,75 @@ async def run_agent(
     hub: McpHub | None,
     model: str = OLLAMA_MODEL,
     memory: MemoryStore | None = None,
+    rag: RagStore | None = None,
     session_id: str | int | None = None,
     progress: ProgressCallback | None = None,
+    think: bool | None = None,
+    timeout_seconds: float | None = None,
+    verbose: bool = False,
 ) -> str:
     """Run one user turn, optionally using MCP tools via Ollama tool calling."""
-    client = AsyncClient(host=OLLAMA_HOST)
+    think_enabled = OLLAMA_THINK if think is None else think
+    chat_timeout = (
+        OLLAMA_TIMEOUT_SECONDS if timeout_seconds is None else float(timeout_seconds)
+    )
+    client = AsyncClient(host=OLLAMA_HOST, timeout=chat_timeout)
     messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
     if memory is not None and session_id is not None:
         messages.extend(await memory.context_messages(session_id))
+    if rag is not None and session_id is not None:
+        if progress is not None:
+            await progress("thinking", None)
+        rag_message = await _rag_context_message(rag, memory, session_id, user_prompt)
+        if rag_message is not None:
+            # Insert after system prompt / summary, before recent turns when possible.
+            # context_messages returns [summary?, ...recent]. Put RAG after summary.
+            insert_at = 1
+            if (
+                len(messages) > 1
+                and messages[1].get("role") == "system"
+                and str(messages[1].get("content", "")).startswith(
+                    "Durable memory from earlier conversations:"
+                )
+            ):
+                insert_at = 2
+            messages.insert(insert_at, rag_message)
     messages.append({"role": "user", "content": user_prompt})
 
     tools = hub.as_ollama_tools() if hub and hub.tool_names else None
+    logger.info(
+        "Agent think mode=%s verbose=%s timeout=%.0fs",
+        think_enabled,
+        verbose,
+        chat_timeout,
+    )
 
     for iteration in range(MAX_TOOL_ITERATIONS):
         logger.info("Agent iteration %d/%d", iteration + 1, MAX_TOOL_ITERATIONS)
         if progress is not None:
             await progress("thinking", None)
-        response = await client.chat(
-            model=model,
-            messages=messages,
-            tools=tools,
-        )
+        try:
+            response = await _chat_with_monitoring(
+                client,
+                model=model,
+                messages=messages,
+                tools=tools,
+                think=think_enabled,
+                timeout_seconds=chat_timeout,
+                progress=progress,
+                verbose=verbose,
+            )
+        except TimeoutError:
+            final_response = (
+                f"System Error: the model timed out after "
+                f"{int(chat_timeout)}s and may be stuck. "
+                f"Check Ollama on {OLLAMA_HOST}."
+            )
+            if progress is not None:
+                await progress("responding", None)
+            return await _remember_response(
+                memory, rag, session_id, user_prompt, final_response, model
+            )
         message = response.message
         messages.append(_message_to_dict(message))
 
@@ -106,7 +387,7 @@ async def run_agent(
             if progress is not None:
                 await progress("responding", None)
             return await _remember_response(
-                memory, session_id, user_prompt, final_response, model
+                memory, rag, session_id, user_prompt, final_response, model
             )
 
         if hub is None:
@@ -114,7 +395,7 @@ async def run_agent(
             if progress is not None:
                 await progress("responding", None)
             return await _remember_response(
-                memory, session_id, user_prompt, final_response, model
+                memory, rag, session_id, user_prompt, final_response, model
             )
 
         for call in tool_calls:
@@ -140,5 +421,5 @@ async def run_agent(
     if progress is not None:
         await progress("responding", None)
     return await _remember_response(
-        memory, session_id, user_prompt, final_response, model
+        memory, rag, session_id, user_prompt, final_response, model
     )
