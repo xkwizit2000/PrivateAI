@@ -90,6 +90,9 @@ Available variables:
 | `ALLOWED_USER_ID` | `0` | Only Telegram user permitted to use the bot; required |
 | `OLLAMA_MODEL` | `qwen2.5-coder:7b` | Ollama model tag |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Local or remote Ollama API |
+| `OLLAMA_TIMEOUT_SECONDS` | `180` | Hard timeout per Ollama chat call |
+| `OLLAMA_STUCK_WARN_SECONDS` | `30` | Log a stuck warning while still waiting |
+| `OLLAMA_THINK` | `0` | Default model thinking/reasoning (`1`/`0`; overridable with `/think`) |
 | `MCP_CONFIG_PATH` | `<project>/mcp.json` | Local MCP server configuration |
 | `MAX_TOOL_ITERATIONS` | `8` | Maximum model/tool loops per request |
 | `MCP_READONLY` | `1` | Hide tools whose names appear to modify data |
@@ -97,6 +100,12 @@ Available variables:
 | `MEMORY_RECENT_TURNS` | `4` | Recent turns inserted into each model prompt |
 | `MEMORY_SUMMARIZE_EVERY` | `6` | Completed turns between summary updates |
 | `MEMORY_MAX_CONTEXT_CHARS` | `12000` | Soft memory-text budget per prompt |
+| `RAG_ENABLED` | `1` | Retrieve older relevant turns via embeddings |
+| `RAG_DIR` | `<project>/data/rag` | Per-session SQLite vector store directory |
+| `RAG_EMBED_MODEL` | `nomic-embed-text` | Embedding model on `OLLAMA_HOST` |
+| `RAG_TOP_K` | `4` | Max retrieved chunks per prompt |
+| `RAG_MAX_CONTEXT_CHARS` | `4000` | Soft character budget for retrieved snippets |
+| `RAG_MIN_SCORE` | `0.25` | Drop weak cosine similarity matches |
 
 The `.env` file is gitignored and must never be committed.
 
@@ -106,6 +115,7 @@ The `.env` file is gitignored and must never be committed.
 
 ```bash
 ollama pull gemma4:12b
+ollama pull nomic-embed-text
 ollama serve
 ```
 
@@ -115,6 +125,43 @@ Keep the default:
 OLLAMA_HOST=http://127.0.0.1:11434
 ```
 
+Each successful chat call logs performance stats (`prompt_tok/s`, `gen_tok/s`,
+durations). While a call is in flight, the bot logs a stuck warning every
+`OLLAMA_STUCK_WARN_SECONDS` (default 30s). If the call exceeds
+`OLLAMA_TIMEOUT_SECONDS` (default 180s), it fails with a clear timeout error
+instead of hanging indefinitely.
+
+Gemma 4 and similar models may "think" before answering, which is slower.
+PrivateAI defaults to `OLLAMA_THINK=0` so reasoning mode is off. Set
+`OLLAMA_THINK=1` only when you want that behavior as the default.
+
+Per Telegram chat, override it without restarting:
+
+```text
+/status
+/think status
+/think on
+/think off
+/verbose status
+/verbose on
+/verbose off
+/timeout status
+/timeout 600
+/timeout reset
+```
+
+`/status` lists every per-chat setting (think, verbose, timeout, and any
+future ones), plus Ollama host/chat model and currently loaded models from
+`GET /api/ps`. Each of `/think`, `/verbose`, and `/timeout` also accepts
+`status` (or no args) for that setting alone.
+
+With `/think on` and `/verbose on`, model reasoning streams into the temporary
+status message. With `/verbose off`, status stays as the simple progress
+indicator.
+
+When enabling `/think on`, raise `/timeout` for that chat so deep reasoning
+has enough time. Per-chat choices are stored in `data/session_settings.json`.
+
 ### Ollama on a dedicated GPU server
 
 On the GPU server, expose Ollama only on a trusted private network:
@@ -122,6 +169,7 @@ On the GPU server, expose Ollama only on a trusted private network:
 ```bash
 OLLAMA_HOST=0.0.0.0:11434 ollama serve
 ollama pull gemma4:12b
+ollama pull nomic-embed-text
 ```
 
 On the PrivateAI bot/tool host:
@@ -196,16 +244,54 @@ Each new prompt receives:
 
 1. The system instructions
 2. The compact rolling summary
-3. A limited number of recent user/assistant turns
-4. The current Telegram message
+3. Relevant older turns retrieved by conversation RAG (when enabled)
+4. A limited number of recent user/assistant turns
+5. The current Telegram message
 
 This gives a small-context model durable continuity without loading the entire
 conversation into VRAM. The character budget is an approximation rather than
 an exact tokenizer-based context limit.
 
-Memory files are gitignored, permissioned for the local user, and may contain
-private conversation content. Store them on protected storage and back up
-`MEMORY_DIR` if the memory must survive host failure.
+## Conversation RAG
+
+PrivateAI embeds past conversation turns with an Ollama embedding model (default
+`nomic-embed-text` on the same `OLLAMA_HOST` as the chat model) and stores
+vectors in per-session SQLite files:
+
+```text
+data/rag/<telegram-chat-id>.sqlite3
+```
+
+On each request the agent embeds the user message, ranks earlier chunks by
+cosine similarity, and injects the top matches (excluding turns already present
+in the recent window). After each reply, new turns are indexed in the
+background. On startup, existing `data/sessions/*.jsonl` transcripts are
+backfilled into the RAG store.
+
+Pull the embedding model on the GPU/Ollama host:
+
+```bash
+ollama pull nomic-embed-text
+```
+
+Optional `.env` settings:
+
+```env
+RAG_ENABLED=1
+RAG_DIR=/path/to/privateai/data/rag
+RAG_EMBED_MODEL=nomic-embed-text
+RAG_TOP_K=4
+RAG_MAX_CONTEXT_CHARS=4000
+RAG_MIN_SCORE=0.25
+```
+
+Set `RAG_ENABLED=0` to disable retrieval and indexing. Document/file corpus
+indexing is not implemented yet — RAG currently covers conversation history
+only.
+
+Memory and RAG files are gitignored, permissioned for the local user, and may
+contain private conversation content. Store them on protected storage and back
+up `MEMORY_DIR` and `RAG_DIR` if they must survive host failure.
 
 ## Running PrivateAI
 
@@ -222,6 +308,7 @@ operation, run PrivateAI under `systemd`, a container supervisor, or `tmux`.
 On startup, logs report:
 
 - Whether durable memory is enabled
+- Whether conversation RAG is enabled
 - Which MCP tools were loaded
 - Whether the bot is running in chat-only mode
 - Telegram polling status
@@ -264,13 +351,13 @@ docker run -d --name privateai \
 
 ### Container notes
 
-- `MCP_CONFIG_PATH` defaults to `/app/mcp.json` and `MEMORY_DIR` to
-  `/data/sessions` inside the image.
+- `MCP_CONFIG_PATH` defaults to `/app/mcp.json`, `MEMORY_DIR` to
+  `/data/sessions`, and `RAG_DIR` to `/data/rag` inside the image.
 - A filesystem MCP root must be a path that exists **inside** the container.
   Mount the host directory (e.g. `-v /srv/work:/srv/work`) and use that path in
   `mcp.json`.
-- The container runs as a non-root user; the `/data` volume keeps memory across
-  restarts.
+- The container runs as a non-root user; the `/data` volume keeps memory and
+  RAG indexes across restarts.
 
 ## Testing
 
@@ -282,7 +369,8 @@ python -m unittest discover -s tests -v
 ```
 
 The tests currently cover transcript persistence, recent-turn loading,
-summary thresholds, summary loading, and session-path validation.
+summary thresholds, summary loading, session-path validation, and conversation
+RAG index/retrieve behavior.
 
 ## Project layout
 
@@ -299,9 +387,11 @@ PrivateAI/
 │   ├── bot.py            Telegram application
 │   ├── config.py         environment configuration
 │   ├── mcp_client.py     MCP client hub
-│   └── memory.py         durable session memory
+│   ├── memory.py         durable session memory
+│   └── rag.py            conversation RAG store
 └── tests/
-    └── test_memory.py
+    ├── test_memory.py
+    └── test_rag.py
 ```
 
 ## Current limitations
@@ -309,6 +399,5 @@ PrivateAI/
 - Only one Telegram user ID is authorized.
 - MCP connections currently use local stdio transport only.
 - There is no confirmation workflow for write-capable tools.
-- Memory retrieval uses rolling summaries and recent turns, not semantic
-  vector search.
+- RAG indexes conversation turns only, not arbitrary workspace documents.
 - There is no packaged `systemd` unit yet.
