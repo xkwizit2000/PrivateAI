@@ -57,11 +57,27 @@ class MemoryStoreTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(messages[0]["role"], "system")
             self.assertIn("User prefers concise answers.", messages[0]["content"])
 
-    async def test_rejects_non_numeric_session_ids(self):
+    async def test_rejects_unsafe_session_ids(self):
         with tempfile.TemporaryDirectory() as directory:
             store = MemoryStore(Path(directory))
             with self.assertRaises(ValueError):
                 await store.context_messages("../escape")
+
+    async def test_accepts_session_hex_ids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = MemoryStore(Path(directory), recent_turns=1)
+            session_id = (
+                "05abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+            )
+            await store.remember_turn(session_id, "hello", "world")
+            messages = await store.context_messages(session_id)
+            self.assertEqual(
+                messages,
+                [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "world"},
+                ],
+            )
 
 
 if __name__ == "__main__":

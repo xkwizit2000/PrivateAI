@@ -10,13 +10,40 @@ services:
       # Reach an Ollama server running on the Docker host by default.
       # Override with a remote GPU host, e.g. http://gpu-server.internal:11434
       OLLAMA_HOST: ${OLLAMA_HOST:-http://10.0.0.37:11434}
+      CHAT_BACKEND: ${CHAT_BACKEND:-telegram}
+      BRIDGE_HOST: 0.0.0.0
+      BRIDGE_PORT: 8787
+      MEMORY_DIR: /data/sessions
+      RAG_DIR: /data/rag
+      SESSION_SETTINGS_PATH: /data/session_settings.json
+      MCP_CONFIG_PATH: /app/mcp.json
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       # MCP tool configuration (read-only inside the container).
       - ./mcp.json:/app/mcp.json:ro
-      # Durable conversation memory.
+      # Durable conversation memory / RAG / settings.
+      - ./data:/data
       - ./workingdir:/workingdir
+    ports:
+      # Only needed for CHAT_BACKEND=session (Session.js → Python bridge).
+      - "${BRIDGE_PORT:-8787}:8787"
+
+  session-adapter:
+    profiles: ["session"]
+    build: ./session-adapter
+    image: privateai-session-adapter:latest
+    container_name: privateai-session
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      AGENT_BRIDGE_URL: http://privateai:8787
+      SESSION_STORAGE_PATH: /data/storage.db
+    volumes:
+      - ./data/session-adapter:/data
+    depends_on:
+      - privateai
 
 volumes:
   privateai-data:

@@ -1,42 +1,45 @@
 # PrivateAI
 
-PrivateAI is a headless personal assistant for Ubuntu Server. Telegram is the
-remote interface, Ollama provides local or remote model inference, and Model
-Context Protocol (MCP) servers expose scoped tools.
+PrivateAI is a headless personal assistant for Ubuntu Server. Telegram or
+[Session](https://getsession.org/) is the remote interface, Ollama provides
+local or remote model inference, and Model Context Protocol (MCP) servers
+expose scoped tools.
 
 The bot currently supports:
 
-- Telegram user-ID authorization
+- Configurable chat backend (`CHAT_BACKEND=telegram` or `session`)
+- Telegram user-ID or Session ID authorization
 - Local or network-accessible Ollama inference
 - Ollama tool calling through local stdio MCP servers
 - Read-only MCP mode by default
 - Durable per-chat transcripts and rolling summaries
-- Telegram-safe response chunking and sanitized error messages
+- Safe response chunking and sanitized error messages
 
 ## Architecture
 
 ```text
-Your Telegram client
-        │
-        ▼
-Telegram Bot API
-        │
-        ▼
+Telegram app              Session app (getsession.org)
+      │                            │
+      ▼                            ▼
+Telegram Bot API          Session.js adapter (Bun)
+      │                            │ HTTP POST /v1/message
+      └────────────┬───────────────┘
+                   ▼
 PrivateAI bot / agent host
-  ├── src/bot.py          authorization and Telegram messaging
-  ├── src/agent.py        Ollama reasoning and tool-call loop
-  ├── src/mcp_client.py   MCP server lifecycle and tool routing
-  └── src/memory.py       transcript and rolling-summary storage
-        │                       │
-        │ HTTP                  │ stdio
-        ▼                       ▼
-Ollama model host          Scoped MCP servers
-(local or remote GPU)      (filesystem, future tools)
+  ├── src/bot.py / bridge.py   front-end adapters
+  ├── src/agent.py             Ollama reasoning and tool-call loop
+  ├── src/mcp_client.py        MCP server lifecycle and tool routing
+  └── src/memory.py            transcript and rolling-summary storage
+        │                            │
+        │ HTTP                       │ stdio
+        ▼                            ▼
+Ollama model host               Scoped MCP servers
+(local or remote GPU)           (filesystem, future tools)
 ```
 
 The bot and MCP servers can run on a smaller tool host while Ollama runs on a
 dedicated GPU server. Your normal interaction with the whole system remains
-through Telegram.
+through Telegram or Session.
 
 ### Reference development host
 
@@ -64,10 +67,11 @@ and embeddings are both loaded.
 
 - Python 3.10+
 - Ubuntu Server 24.04+ recommended
-- Ollama with a tool-capable model, such as `gemma4:12b`
+- Ollama with a tool-capable model, such as `gemma4:e4b` or `gemma4:12b`
 - Node.js, npm, and `npx` for the example filesystem MCP server
-- A Telegram bot token and your numeric Telegram user ID
-
+- For Telegram: a bot token and your numeric Telegram user ID
+- For Session: [Bun](https://bun.sh/) 1.x, a Session mnemonic for the bot identity,
+  and your personal Session ID
 ## Installation
 
 ```bash
@@ -89,6 +93,49 @@ pip install -r requirements.txt
 Do not use your Telegram username for `ALLOWED_USER_ID`; the application
 compares numeric IDs.
 
+Set `CHAT_BACKEND=telegram` (the default) in `.env`.
+
+## Session setup
+
+[Session](https://getsession.org/) has no official Bot API. PrivateAI uses a
+low-risk [Session.js](https://sessionjs.github.io/docs/) adapter that speaks
+normal Session DMs and calls the Python agent over a local HTTP bridge.
+
+1. Install the Session app and note **your** Session ID (Account ID).
+2. Create a dedicated Session identity for the bot (or reuse a spare mnemonic).
+   Put that recovery phrase in `SESSION_MNEMONIC` — treat it like a password.
+3. Set `SESSION_ALLOWED_ID` to your personal Session ID (comma-separated if
+   you need more than one).
+4. Switch the Python process to the bridge:
+
+```env
+CHAT_BACKEND=session
+BRIDGE_HOST=127.0.0.1
+BRIDGE_PORT=8787
+AGENT_BRIDGE_URL=http://127.0.0.1:8787
+# Optional shared secret checked by the bridge:
+# BRIDGE_TOKEN=some-long-random-string
+```
+
+5. Run both processes:
+
+```bash
+# terminal 1 — agent + MCP + memory/RAG bridge
+source .venv/bin/activate
+CHAT_BACKEND=session python -m src
+
+# terminal 2 — Session.js DM adapter (requires Bun)
+cd session-adapter
+bun install
+bun start
+```
+
+6. In Session, message the bot’s Session ID (printed at adapter startup).
+
+Slash commands (`/status`, `/think`, `/verbose`, `/timeout`) work the same as
+on Telegram. The adapter stores Sync/poll state under
+`data/session-adapter/storage.db` so restarts do not re-process old DMs.
+
 ## Environment configuration
 
 Copy the complete example and replace its placeholder values:
@@ -108,8 +155,15 @@ Available variables:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `TELEGRAM_TOKEN` | none | Telegram Bot API token; required |
-| `ALLOWED_USER_ID` | `0` | Only Telegram user permitted to use the bot; required |
+| `CHAT_BACKEND` | `telegram` | Front end: `telegram` or `session` |
+| `TELEGRAM_TOKEN` | none | Telegram Bot API token; required for Telegram |
+| `ALLOWED_USER_ID` | `0` | Only Telegram user permitted to use the bot |
+| `SESSION_MNEMONIC` | none | Bot Session recovery phrase; required for Session adapter |
+| `SESSION_DISPLAY_NAME` | `PrivateAI` | Display name for the Session bot identity |
+| `SESSION_ALLOWED_ID` | none | Comma-separated Session IDs allowed to chat |
+| `BRIDGE_HOST` / `BRIDGE_PORT` | `127.0.0.1` / `8787` | Python HTTP bridge bind address |
+| `BRIDGE_TOKEN` | empty | Optional Bearer token for bridge requests |
+| `AGENT_BRIDGE_URL` | `http://127.0.0.1:8787` | URL the Session.js adapter calls |
 | `OLLAMA_MODEL` | `qwen2.5-coder:7b` | Ollama model tag |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Local or remote Ollama API |
 | `OLLAMA_TIMEOUT_SECONDS` | `180` | Hard timeout per Ollama chat call |
@@ -317,12 +371,16 @@ up `MEMORY_DIR` and `RAG_DIR` if they must survive host failure.
 
 ## Running PrivateAI
 
-Activate the environment and start the bot:
+Activate the environment and start the selected front end:
 
 ```bash
 source .venv/bin/activate
+# CHAT_BACKEND=telegram (default) → Telegram polling
+# CHAT_BACKEND=session → local HTTP bridge for the Session.js adapter
 python -m src
 ```
+
+If `CHAT_BACKEND=session`, also start `session-adapter` (see **Session setup**).
 
 If Ollama is local, ensure `ollama serve` is already running. For persistent
 operation, run PrivateAI under `systemd`, a container supervisor, or `tmux`.
@@ -333,7 +391,7 @@ On startup, logs report:
 - Whether conversation RAG is enabled
 - Which MCP tools were loaded
 - Whether the bot is running in chat-only mode
-- Telegram polling status
+- Telegram polling status, or Session bridge bind address
 
 ## Docker
 
@@ -342,6 +400,8 @@ tool configuration are provided at runtime rather than baked into the image.
 
 ### Docker Compose (recommended)
 
+Telegram (default):
+
 ```bash
 cp .env.example .env      # fill in TELEGRAM_TOKEN and ALLOWED_USER_ID
 cp mcp.json.example mcp.json
@@ -349,10 +409,16 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-Compose mounts `mcp.json` read-only, stores memory in the `privateai-data`
-volume, and defaults `OLLAMA_HOST` to `http://host.docker.internal:11434` so the
-container can reach an Ollama server on the Docker host. Override it for a
-remote GPU host:
+Session (Python bridge + Session.js adapter):
+
+```bash
+# In .env: CHAT_BACKEND=session, SESSION_MNEMONIC, SESSION_ALLOWED_ID, …
+docker compose --profile session up -d --build
+docker compose logs -f
+```
+
+Compose mounts `mcp.json` read-only, persists `./data` for memory/RAG/settings,
+and defaults `OLLAMA_HOST` for a LAN/GPU host. Override as needed:
 
 ```bash
 OLLAMA_HOST=http://gpu-server.internal:11434 docker compose up -d
@@ -401,24 +467,27 @@ PrivateAI/
 ├── .env.example          complete environment template
 ├── mcp.json.example      scoped MCP server template
 ├── Dockerfile            container image (Python + Node for MCP)
-├── docker-compose.yml    compose service with memory volume
+├── docker-compose.yml    compose services (Telegram or Session profile)
 ├── requirements.txt
+├── session-adapter/      Bun + Session.js DM front end
 ├── src/
-│   ├── __main__.py       `python -m src` entry point
+│   ├── __main__.py       `python -m src` entry (telegram|session)
 │   ├── agent.py          Ollama agent/tool loop
 │   ├── bot.py            Telegram application
+│   ├── bridge.py         HTTP bridge for Session.js
+│   ├── commands.py       shared slash commands
 │   ├── config.py         environment configuration
 │   ├── mcp_client.py     MCP client hub
 │   ├── memory.py         durable session memory
-│   └── rag.py            conversation RAG store
+│   ├── rag.py            conversation RAG store
+│   └── runtime.py        shared agent/MCP/memory bootstrap
 └── tests/
-    ├── test_memory.py
-    └── test_rag.py
 ```
 
 ## Current limitations
 
-- Only one Telegram user ID is authorized.
+- Telegram authorizes a single user ID; Session authorizes an allowlist of IDs.
+- Session support uses community Session.js (not an official Bot API).
 - MCP connections currently use local stdio transport only.
 - There is no confirmation workflow for write-capable tools.
 - RAG indexes conversation turns only, not arbitrary workspace documents.

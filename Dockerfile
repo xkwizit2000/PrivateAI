@@ -10,7 +10,8 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     MCP_CONFIG_PATH=/app/mcp.json \
     MEMORY_DIR=/data/sessions \
-    RAG_DIR=/data/rag
+    RAG_DIR=/data/rag \
+    SESSION_SETTINGS_PATH=/data/session_settings.json
 
 WORKDIR /app
 
