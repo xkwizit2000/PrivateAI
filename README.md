@@ -38,6 +38,27 @@ The bot and MCP servers can run on a smaller tool host while Ollama runs on a
 dedicated GPU server. Your normal interaction with the whole system remains
 through Telegram.
 
+### Reference development host
+
+The primary lab box used while building PrivateAI is a **Beelink SER5 Max**
+mini PC configured as a single-machine GPU host:
+
+| Item | Detail |
+| --- | --- |
+| Hardware | Beelink SER5 Max, 24 GB system RAM |
+| GPU | AMD Radeon 680M (iGPU) |
+| BIOS | 16 GB allocated to video RAM (UMA / shared graphics) |
+| OS | Ubuntu 26.04 |
+| Inference | Ollama installed and serving models on this host |
+| Chat model | `gemma4:e4b` — smaller than `gemma4:12b` so the Radeon 680M keeps headroom for the RAG embedding model (`nomic-embed-text`) alongside chat |
+| PrivateAI | Agent, Telegram bot, and MCP tools run on the same machine |
+
+On this layout, keep `OLLAMA_HOST=http://127.0.0.1:11434` (or the Docker
+`host.docker.internal` / LAN equivalent if the bot runs in Compose). Splitting
+the bot onto a separate host is optional; co-locating everything on the SER5
+is the simplest development path. Larger chat tags can starve VRAM when chat
+and embeddings are both loaded.
+
 ## Requirements
 
 - Python 3.10+
