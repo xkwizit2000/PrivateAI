@@ -40,8 +40,9 @@ through Telegram.
 
 ### Reference development host
 
-The primary lab box used while building PrivateAI is a **Beelink SER5 Max**
-mini PC configured as a single-machine GPU host:
+The primary lab box used while building PrivateAI is a
+[Beelink SER5 Max](https://www.amazon.com/dp/B0CGRDSMDN) mini PC configured as
+a single-machine GPU host:
 
 | Item | Detail |
 | --- | --- |
