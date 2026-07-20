@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import OLLAMA_THINK, OLLAMA_TIMEOUT_SECONDS
+from .ids import safe_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +35,7 @@ class SessionSettings:
         self._load()
 
     def _safe_id(self, session_id: str | int) -> str:
-        value = str(session_id)
-        if not value or not value.lstrip("-").isdigit():
-            raise ValueError("Session ID must be numeric")
-        return value
+        return safe_session_id(session_id)
 
     def _load(self) -> None:
         if not self.path.exists():

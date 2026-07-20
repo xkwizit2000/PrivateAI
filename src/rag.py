@@ -24,6 +24,7 @@ from .config import (
     RAG_MIN_SCORE,
     RAG_TOP_K,
 )
+from .ids import safe_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -32,11 +33,7 @@ EmbedFn = Callable[[Sequence[str]], Awaitable[list[list[float]]]]
 
 
 def _safe_session_id(session_id: str | int) -> str:
-    value = str(session_id)
-    if not value or not value.lstrip("-").isdigit():
-        raise ValueError("Session ID must be numeric")
-    return value
-
+    return safe_session_id(session_id)
 
 def _chunk_text(text: str, size: int = CHUNK_SIZE) -> list[str]:
     cleaned = text.strip()

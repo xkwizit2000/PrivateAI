@@ -13,6 +13,8 @@ from typing import Any
 
 from ollama import AsyncClient
 
+from .ids import safe_session_id
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,11 +36,7 @@ class MemoryStore:
         self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     def _safe_session_id(self, session_id: str | int) -> str:
-        value = str(session_id)
-        if not value or not value.lstrip("-").isdigit():
-            raise ValueError("Session ID must be numeric")
-        return value
-
+        return safe_session_id(session_id)
     def _paths(self, session_id: str | int) -> tuple[Path, Path]:
         safe_id = self._safe_session_id(session_id)
         return (

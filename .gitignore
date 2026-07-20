@@ -4,6 +4,10 @@ mcp.json
 *.local
 data/
 
+# Session.js adapter
+session-adapter/node_modules/
+session-adapter/storage.db
+
 # Python environment files
 __pycache__/
 *.py[cod]
