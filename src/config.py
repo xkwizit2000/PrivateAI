@@ -18,6 +18,13 @@ OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180"))
 OLLAMA_STUCK_WARN_SECONDS = float(os.getenv("OLLAMA_STUCK_WARN_SECONDS", "30"))
 # Gemma/Qwen thinking/reasoning mode. Set 0/false to disable (faster replies).
 OLLAMA_THINK = os.getenv("OLLAMA_THINK", "0").lower() in {"1", "true", "yes"}
+# Max tokens to generate per chat call (-1 = Ollama default / uncapped).
+OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "-1"))
+# Context window size in tokens. Empty/0 = leave Ollama/model default.
+_num_ctx_raw = os.getenv("OLLAMA_NUM_CTX", "").strip()
+OLLAMA_NUM_CTX = int(_num_ctx_raw) if _num_ctx_raw else None
+# When generation stops with done_reason=length, continue this many times.
+OLLAMA_MAX_CONTINUATIONS = int(os.getenv("OLLAMA_MAX_CONTINUATIONS", "2"))
 MCP_CONFIG_PATH = Path(os.getenv("MCP_CONFIG_PATH", PROJECT_ROOT / "mcp.json"))
 MAX_TOOL_ITERATIONS = int(os.getenv("MAX_TOOL_ITERATIONS", "8"))
 # When true, expose only inspect/read MCP tools (recommended default).
@@ -57,4 +64,4 @@ SESSION_STORAGE_PATH = os.getenv(
     "SESSION_STORAGE_PATH",
     str(PROJECT_ROOT / "data" / "session-adapter" / "storage.db"),
 )
-SESSION_MESSAGE_CHUNK = int(os.getenv("SESSION_MESSAGE_CHUNK", "2000"))
+SESSION_MESSAGE_CHUNK = int(os.getenv("SESSION_MESSAGE_CHUNK", "1800"))

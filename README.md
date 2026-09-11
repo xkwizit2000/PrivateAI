@@ -164,11 +164,15 @@ Available variables:
 | `BRIDGE_HOST` / `BRIDGE_PORT` | `127.0.0.1` / `8787` | Python HTTP bridge bind address |
 | `BRIDGE_TOKEN` | empty | Optional Bearer token for bridge requests |
 | `AGENT_BRIDGE_URL` | `http://127.0.0.1:8787` | URL the Session.js adapter calls |
+| `SESSION_MESSAGE_CHUNK` | `1800` | Max characters per Session outbound message (under 2000 limit) |
 | `OLLAMA_MODEL` | `qwen2.5-coder:7b` | Ollama model tag |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Local or remote Ollama API |
 | `OLLAMA_TIMEOUT_SECONDS` | `180` | Hard timeout per Ollama chat call |
 | `OLLAMA_STUCK_WARN_SECONDS` | `30` | Log a stuck warning while still waiting |
 | `OLLAMA_THINK` | `0` | Default model thinking/reasoning (`1`/`0`; overridable with `/think`) |
+| `OLLAMA_NUM_PREDICT` | `-1` | Max tokens to generate per chat call (`-1` = uncapped) |
+| `OLLAMA_NUM_CTX` | empty | Optional context window override (tokens); empty keeps model default |
+| `OLLAMA_MAX_CONTINUATIONS` | `2` | Auto-continue when Ollama stops with `done_reason=length` |
 | `MCP_CONFIG_PATH` | `<project>/mcp.json` | Local MCP server configuration |
 | `MAX_TOOL_ITERATIONS` | `8` | Maximum model/tool loops per request |
 | `MCP_READONLY` | `1` | Hide tools whose names appear to modify data |
@@ -210,6 +214,11 @@ instead of hanging indefinitely.
 Gemma 4 and similar models may "think" before answering, which is slower.
 PrivateAI defaults to `OLLAMA_THINK=0` so reasoning mode is off. Set
 `OLLAMA_THINK=1` only when you want that behavior as the default.
+
+To avoid truncated replies, PrivateAI sends `num_predict=-1` by default and
+auto-continues when Ollama stops with `done_reason=length` (see
+`OLLAMA_MAX_CONTINUATIONS`). On Session, long replies are split under the
+2000-character client limit via `SESSION_MESSAGE_CHUNK` (default 1800).
 
 Per Telegram chat, override it without restarting:
 
