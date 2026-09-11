@@ -35,7 +35,7 @@ const storagePath = resolve(
   process.env.SESSION_STORAGE_PATH ||
     resolve(import.meta.dir, "../../data/session-adapter/storage.db"),
 )
-const chunkSize = Number(process.env.SESSION_MESSAGE_CHUNK || "2000")
+const chunkSize = Number(process.env.SESSION_MESSAGE_CHUNK || "1800")
 
 if (!mnemonic) {
   throw new Error("Missing SESSION_MNEMONIC environment variable.")
@@ -58,11 +58,19 @@ console.log(`Agent bridge: ${bridgeUrl}`)
 const inflight = new Set<string>()
 
 function chunkText(text: string, limit: number): string[] {
-  if (text.length <= limit) return [text]
+  const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 1800
+  if (text.length <= safeLimit) return [text]
   const parts: string[] = []
-  for (let i = 0; i < text.length; i += limit) {
-    parts.push(text.slice(i, i + limit))
+  let remaining = text
+  while (remaining.length > safeLimit) {
+    let cut = remaining.lastIndexOf("\n\n", safeLimit)
+    if (cut < safeLimit * 0.4) cut = remaining.lastIndexOf("\n", safeLimit)
+    if (cut < safeLimit * 0.4) cut = remaining.lastIndexOf(" ", safeLimit)
+    if (cut < safeLimit * 0.4) cut = safeLimit
+    parts.push(remaining.slice(0, cut).trimEnd())
+    remaining = remaining.slice(cut).trimStart()
   }
+  if (remaining) parts.push(remaining)
   return parts
 }
 
@@ -99,12 +107,17 @@ async function replyAll(
   text: string,
   source?: IncomingMessage,
 ): Promise<void> {
-  const limit = Number.isFinite(chunkSize) ? chunkSize : 2000
-  const parts = chunkText(text, limit)
+  // Session's standard client limit is 2000 characters; stay under it.
+  const limit = Number.isFinite(chunkSize) && chunkSize > 0 ? chunkSize : 1800
+  // Reserve room for multipart prefixes like "(12/34)\n" so no body text is dropped.
+  const prefixReserve = 12
+  const parts = chunkText(text, Math.max(200, limit - prefixReserve))
   for (const [index, part] of parts.entries()) {
+    const prefix =
+      parts.length > 1 ? `(${index + 1}/${parts.length})\n` : ""
     await session.sendMessage({
       to,
-      text: part,
+      text: prefix + part,
       replyToMessage:
         index === 0 && source ? source.getReplyToMessage() : undefined,
     })

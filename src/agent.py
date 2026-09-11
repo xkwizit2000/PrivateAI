@@ -15,7 +15,10 @@ from .config import (
     MAX_TOOL_ITERATIONS,
     MEMORY_RECENT_TURNS,
     OLLAMA_HOST,
+    OLLAMA_MAX_CONTINUATIONS,
     OLLAMA_MODEL,
+    OLLAMA_NUM_CTX,
+    OLLAMA_NUM_PREDICT,
     OLLAMA_STUCK_WARN_SECONDS,
     OLLAMA_THINK,
     OLLAMA_TIMEOUT_SECONDS,
@@ -35,6 +38,38 @@ If a tool fails, explain the failure briefly and suggest a safer next step.
 Keep answers concise and practical.
 When no tool is needed, answer directly.
 """
+
+
+CONTINUE_PROMPT = (
+    "Continue your previous reply exactly where you left off. "
+    "Do not restart, apologize, or repeat text already written."
+)
+
+
+def _ollama_options() -> dict[str, Any] | None:
+    """Build optional Ollama generation options from config."""
+    options: dict[str, Any] = {}
+    if OLLAMA_NUM_PREDICT is not None and OLLAMA_NUM_PREDICT != -1:
+        options["num_predict"] = OLLAMA_NUM_PREDICT
+    elif OLLAMA_NUM_PREDICT == -1:
+        # Explicit uncapped predict avoids low Modelfile caps truncating replies.
+        options["num_predict"] = -1
+    if OLLAMA_NUM_CTX:
+        options["num_ctx"] = OLLAMA_NUM_CTX
+    return options or None
+
+
+def _prefer_longer_text(assembled: str, final: str | None) -> str:
+    """Prefer assembled stream deltas unless the final payload is longer."""
+    if not final:
+        return assembled
+    return final if len(final) > len(assembled) else assembled
+
+
+def _done_reason(response: Any) -> str | None:
+    reason = getattr(response, "done_reason", None)
+    return str(reason) if reason is not None else None
+
 
 
 def _message_to_dict(message: Any) -> dict[str, Any]:
@@ -135,12 +170,15 @@ async def _chat_with_monitoring(
     watcher = asyncio.create_task(_watch_for_stall(model, started, timeout_seconds))
     stream_reasoning = bool(think and verbose and progress is not None)
 
+    options = _ollama_options()
+
     async def _non_stream() -> Any:
         return await client.chat(
             model=model,
             messages=messages,
             tools=tools,
             think=think,
+            options=options,
         )
 
     async def _stream() -> Any:
@@ -151,6 +189,7 @@ async def _chat_with_monitoring(
             tools=tools,
             think=think,
             stream=True,
+            options=options,
         )
         thinking_parts: list[str] = []
         content_parts: list[str] = []
@@ -182,15 +221,18 @@ async def _chat_with_monitoring(
         if last_chunk is None:
             raise RuntimeError("Ollama stream returned no chunks")
 
-        # Prefer the final streamed message when present; fall back to assembled text.
+        # Assemble deltas; only prefer a final payload when it is longer (full text).
+        # Overwriting with the last delta alone truncates the reply.
         final_message = getattr(last_chunk, "message", None)
         content = "".join(content_parts)
         thinking = "".join(thinking_parts)
         if final_message is not None:
-            if getattr(final_message, "content", None):
-                content = str(final_message.content)
-            if getattr(final_message, "thinking", None):
-                thinking = str(final_message.thinking)
+            final_content = getattr(final_message, "content", None)
+            if final_content:
+                content = _prefer_longer_text(content, str(final_content))
+            final_thinking = getattr(final_message, "thinking", None)
+            if final_thinking:
+                thinking = _prefer_longer_text(thinking, str(final_thinking))
             if getattr(final_message, "tool_calls", None):
                 tool_calls = final_message.tool_calls
 
@@ -383,7 +425,50 @@ async def run_agent(
 
         tool_calls = getattr(message, "tool_calls", None) or []
         if not tool_calls:
-            final_response = (message.content or "").strip() or "(empty model response)"
+            pieces = [(message.content or "").strip()]
+            continuations = 0
+            while (
+                _done_reason(response) == "length"
+                and continuations < OLLAMA_MAX_CONTINUATIONS
+            ):
+                continuations += 1
+                logger.warning(
+                    "Ollama stopped with done_reason=length; continuing %d/%d",
+                    continuations,
+                    OLLAMA_MAX_CONTINUATIONS,
+                )
+                if progress is not None:
+                    await progress("thinking", None)
+                messages.append({"role": "user", "content": CONTINUE_PROMPT})
+                try:
+                    response = await _chat_with_monitoring(
+                        client,
+                        model=model,
+                        messages=messages,
+                        tools=None,
+                        think=think_enabled,
+                        timeout_seconds=chat_timeout,
+                        progress=progress,
+                        verbose=verbose,
+                    )
+                except TimeoutError:
+                    break
+                message = response.message
+                messages.append(_message_to_dict(message))
+                more = (message.content or "").strip()
+                if more:
+                    pieces.append(more)
+                if getattr(message, "tool_calls", None):
+                    # Unexpected tool call during continuation; stop extending.
+                    break
+
+            final_response = "\n".join(p for p in pieces if p) or "(empty model response)"
+            if _done_reason(response) == "length":
+                final_response += (
+                    "\n\n_(Reply truncated by the model length limit. "
+                    "Raise OLLAMA_NUM_PREDICT / OLLAMA_NUM_CTX or "
+                    "OLLAMA_MAX_CONTINUATIONS.)_"
+                )
             if progress is not None:
                 await progress("responding", None)
             return await _remember_response(
