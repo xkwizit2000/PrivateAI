@@ -33,9 +33,12 @@ EmbedFn = Callable[[Sequence[str]], Awaitable[list[list[float]]]]
 
 
 def _safe_session_id(session_id: str | int) -> str:
+    """Validate and normalize a session ID for use in RAG filenames."""
     return safe_session_id(session_id)
 
+
 def _chunk_text(text: str, size: int = CHUNK_SIZE) -> list[str]:
+    """Split text into fixed-size chunks for embedding and storage."""
     cleaned = text.strip()
     if not cleaned:
         return []
@@ -45,11 +48,13 @@ def _chunk_text(text: str, size: int = CHUNK_SIZE) -> list[str]:
 
 
 def _content_hash(session_id: str, role: str, content: str) -> str:
+    """Stable SHA-256 digest used to dedupe indexed chunks."""
     payload = f"{session_id}\0{role}\0{content}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
+    """Return cosine similarity between two equal-length embedding vectors."""
     if not a or not b or len(a) != len(b):
         return 0.0
     dot = 0.0
@@ -79,6 +84,7 @@ class RagStore:
         recent_turns: int = MEMORY_RECENT_TURNS,
         embed_fn: EmbedFn | None = None,
     ) -> None:
+        """Create a per-session RAG store with embedding and retrieval settings."""
         self.data_dir = data_dir
         self.embed_model = embed_model
         self.top_k = top_k
@@ -91,13 +97,16 @@ class RagStore:
         self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     def _db_path(self, session_id: str | int) -> Path:
+        """Return the SQLite database path for a session."""
         return self.data_dir / f"{_safe_session_id(session_id)}.sqlite3"
 
     def _lock(self, session_id: str | int) -> asyncio.Lock:
+        """Return the per-session asyncio lock, creating it if needed."""
         safe_id = _safe_session_id(session_id)
         return self._locks.setdefault(safe_id, asyncio.Lock())
 
     def _connect(self, session_id: str | int) -> sqlite3.Connection:
+        """Open (and initialize) the session SQLite DB with the chunks table."""
         path = self._db_path(session_id)
         conn = sqlite3.connect(path)
         conn.row_factory = sqlite3.Row
@@ -119,6 +128,7 @@ class RagStore:
         return conn
 
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        """Embed texts via the injected embed_fn or Ollama's embedding API."""
         if not texts:
             return []
         if self._embed_fn is not None:
@@ -281,6 +291,7 @@ class RagStore:
         return selected
 
     def format_context(self, snippets: Sequence[dict[str, Any]]) -> str:
+        """Format retrieved snippets into a system-prompt context block."""
         if not snippets:
             return ""
         lines = ["Relevant past context:"]

@@ -14,11 +14,14 @@ _COMMAND_RE = re.compile(r"^/([A-Za-z0-9_]+)(?:@[A-Za-z0-9_]+)?(?:\s+(.*))?$", r
 
 @dataclass(frozen=True)
 class ParsedCommand:
+    """A slash command name plus whitespace-split arguments."""
+
     name: str
     args: list[str]
 
 
 def parse_slash_command(text: str) -> ParsedCommand | None:
+    """Parse a leading /command (optionally @bot) from message text, or return None."""
     stripped = text.strip()
     match = _COMMAND_RE.match(stripped)
     if match is None:
@@ -47,12 +50,14 @@ async def handle_command(
 
 
 async def _status(settings: SessionSettings, session_id: str | int) -> str:
+    """Build the /status reply with session settings and live Ollama ps output."""
     session_text = settings.format_status(session_id)
     ollama_text = await fetch_ollama_status()
     return f"{session_text}\n\n{ollama_text}"
 
 
 def _think(settings: SessionSettings, session_id: str | int, args: list[str]) -> str:
+    """Handle /think to show or toggle model reasoning mode for this chat."""
     current = settings.get_think(session_id)
     normalized = [arg.lower() for arg in args]
 
@@ -83,6 +88,7 @@ def _think(settings: SessionSettings, session_id: str | int, args: list[str]) ->
 
 
 def _timeout(settings: SessionSettings, session_id: str | int, args: list[str]) -> str:
+    """Handle /timeout to show, set, or reset the Ollama chat timeout for this chat."""
     current = settings.get_timeout(session_id)
     normalized = [arg.lower() for arg in args]
 
@@ -114,6 +120,7 @@ def _timeout(settings: SessionSettings, session_id: str | int, args: list[str]) 
 
 
 def _verbose(settings: SessionSettings, session_id: str | int, args: list[str]) -> str:
+    """Handle /verbose to show or toggle streaming of reasoning into progress UI."""
     current = settings.get_verbose(session_id)
     think = settings.get_think(session_id)
     normalized = [arg.lower() for arg in args]

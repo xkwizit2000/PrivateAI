@@ -57,6 +57,7 @@ console.log(`Agent bridge: ${bridgeUrl}`)
 
 const inflight = new Set<string>()
 
+/** Split text into Session-safe chunks, preferring paragraph/line/word breaks. */
 function chunkText(text: string, limit: number): string[] {
   const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 1800
   if (text.length <= safeLimit) return [text]
@@ -74,6 +75,7 @@ function chunkText(text: string, limit: number): string[] {
   return parts
 }
 
+/** POST one chat turn to the Python agent bridge and return the reply text. */
 async function callBridge(sessionId: string, text: string): Promise<string> {
   const headers: Record<string, string> = {
     "content-type": "application/json",
@@ -102,6 +104,7 @@ async function callBridge(sessionId: string, text: string): Promise<string> {
   return body.reply
 }
 
+/** Send a reply as one or more Session DMs under the client character limit. */
 async function replyAll(
   to: string,
   text: string,

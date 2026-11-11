@@ -2,6 +2,7 @@ from .config import CHAT_BACKEND
 
 
 def main() -> None:
+    """Entry point: start Telegram or the Session bridge based on CHAT_BACKEND."""
     import logging
 
     logging.basicConfig(

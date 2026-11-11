@@ -48,6 +48,7 @@ def chunk_text(text: str, limit: int = TELEGRAM_MAX_MESSAGE_LENGTH) -> list[str]
 
 
 def _session_id(update: Update) -> int:
+    """Return the Telegram chat ID used as the durable session key."""
     if update.effective_chat is not None:
         return update.effective_chat.id
     assert update.effective_user is not None
@@ -55,6 +56,7 @@ def _session_id(update: Update) -> int:
 
 
 def _authorized(update: Update) -> bool:
+    """Return True when the update comes from the configured ALLOWED_USER_ID."""
     return (
         update.effective_user is not None
         and update.effective_user.id == ALLOWED_USER_ID
@@ -74,6 +76,7 @@ async def keep_typing(message: Message) -> None:
 
 
 async def _reply_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle Telegram slash commands (/think, /timeout, /verbose, /status)."""
     if update.message is None or update.effective_user is None:
         return
     if not _authorized(update):
@@ -94,6 +97,7 @@ async def _reply_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle a normal Telegram text message: authorize, run the agent, and reply."""
     if update.effective_user is None or update.message is None:
         return
 
@@ -114,6 +118,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     typing_task: asyncio.Task[None] | None = None
 
     def render_status() -> str:
+        """Build the temporary progress message text for the current agent stage."""
         elapsed = int(monotonic() - status_started)
         if progress_stage == "processing":
             label = f"⚙️ Processing: {progress_detail or 'tool'}…"
@@ -128,6 +133,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return f"🤔 Thinking…\nStill thinking — {elapsed}s elapsed"
 
     async def update_status() -> None:
+        """Edit the progress message when its rendered text has changed."""
         nonlocal displayed_status
         async with status_lock:
             next_status = render_status()
@@ -140,11 +146,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 logger.debug("Progress status update failed", exc_info=True)
 
     async def refresh_status() -> None:
+        """Periodically refresh the progress message while the agent is running."""
         while True:
             await asyncio.sleep(STATUS_REFRESH_SECONDS)
             await update_status()
 
     async def report_progress(stage: str, detail: str | None) -> None:
+        """Agent progress callback: update status UI and start typing when responding."""
         nonlocal progress_stage, progress_detail, typing_task
         progress_stage = stage
         progress_detail = detail
@@ -181,16 +189,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def post_init(app: Application) -> None:
+    """Create and attach the shared AppRuntime when the Telegram app starts."""
     app.bot_data["runtime"] = await AppRuntime.create()
 
 
 async def post_shutdown(app: Application) -> None:
+    """Shut down MCP servers and other runtime resources on Telegram exit."""
     runtime: AppRuntime | None = app.bot_data.get("runtime")
     if runtime is not None:
         await runtime.close()
 
 
 def main() -> None:
+    """Start the Telegram bot polling loop for PrivateAI."""
     if not TELEGRAM_TOKEN:
         raise ValueError("Missing TELEGRAM_TOKEN environment variable.")
     if not ALLOWED_USER_ID:

@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 def _authorized(request: web.Request, session_id: str) -> bool:
+    """Validate optional Bearer token and Session ID allowlist for bridge requests."""
     if BRIDGE_TOKEN:
         auth = request.headers.get("Authorization", "")
         expected = f"Bearer {BRIDGE_TOKEN}"
@@ -30,10 +31,12 @@ def _authorized(request: web.Request, session_id: str) -> bool:
 
 
 async def handle_health(_: web.Request) -> web.Response:
+    """Return a simple health-check JSON payload for the Session bridge."""
     return web.json_response({"ok": True, "service": "privateai-bridge"})
 
 
 async def handle_message(request: web.Request) -> web.Response:
+    """Accept a Session chat turn over HTTP and return the agent reply JSON."""
     runtime: AppRuntime = request.app["runtime"]
     try:
         payload: dict[str, Any] = await request.json()
@@ -64,16 +67,19 @@ async def handle_message(request: web.Request) -> web.Response:
 
 
 async def on_startup(app: web.Application) -> None:
+    """Create and attach AppRuntime when the aiohttp bridge starts."""
     app["runtime"] = await AppRuntime.create()
 
 
 async def on_cleanup(app: web.Application) -> None:
+    """Close AppRuntime resources when the aiohttp bridge shuts down."""
     runtime: AppRuntime | None = app.get("runtime")
     if runtime is not None:
         await runtime.close()
 
 
 def create_app() -> web.Application:
+    """Build the aiohttp application with health and message routes."""
     app = web.Application()
     app.router.add_get("/health", handle_health)
     app.router.add_post("/v1/message", handle_message)
@@ -83,6 +89,7 @@ def create_app() -> web.Application:
 
 
 def main() -> None:
+    """Run the Session HTTP bridge server for PrivateAI."""
     if SESSION_ALLOWED_IDS:
         logger.info(
             "Session bridge allowlist enabled (%d id(s))",

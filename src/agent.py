@@ -67,12 +67,13 @@ def _prefer_longer_text(assembled: str, final: str | None) -> str:
 
 
 def _done_reason(response: Any) -> str | None:
+    """Return Ollama's done_reason string, or None if absent."""
     reason = getattr(response, "done_reason", None)
     return str(reason) if reason is not None else None
 
 
-
 def _message_to_dict(message: Any) -> dict[str, Any]:
+    """Normalize an Ollama message object into a plain dict for the chat history."""
     if hasattr(message, "model_dump"):
         data = message.model_dump(exclude_none=True)
     elif isinstance(message, dict):
@@ -89,6 +90,7 @@ def _message_to_dict(message: Any) -> dict[str, Any]:
 
 
 def _ns_to_s(value: Any) -> float | None:
+    """Convert a nanosecond duration to seconds, or None if invalid."""
     if value is None:
         return None
     try:
@@ -98,6 +100,7 @@ def _ns_to_s(value: Any) -> float | None:
 
 
 def _rate(count: Any, duration_ns: Any) -> float | None:
+    """Compute items-per-second from a count and nanosecond duration."""
     seconds = _ns_to_s(duration_ns)
     if seconds is None or seconds <= 0 or count is None:
         return None
@@ -173,6 +176,7 @@ async def _chat_with_monitoring(
     options = _ollama_options()
 
     async def _non_stream() -> Any:
+        """Run a single non-streaming Ollama chat call."""
         return await client.chat(
             model=model,
             messages=messages,
@@ -182,6 +186,7 @@ async def _chat_with_monitoring(
         )
 
     async def _stream() -> Any:
+        """Stream an Ollama chat call, assemble deltas, and surface reasoning progress."""
         assert progress is not None
         stream = await client.chat(
             model=model,
@@ -286,6 +291,7 @@ async def _chat_with_monitoring(
 
 
 def _log_background_failure(task: asyncio.Task[Any]) -> None:
+    """Log exceptions from fire-and-forget memory/RAG background tasks."""
     try:
         task.result()
     except Exception:
@@ -300,6 +306,7 @@ async def _remember_response(
     response: str,
     model: str,
 ) -> str:
+    """Persist the completed turn and kick off summary/RAG indexing in the background."""
     if memory is None or session_id is None:
         return response
 
@@ -328,6 +335,7 @@ async def _rag_context_message(
     session_id: str | int,
     user_prompt: str,
 ) -> dict[str, str] | None:
+    """Build an optional system message with retrieved past conversation snippets."""
     exclude_texts: list[str] = []
     if memory is not None:
         records = await memory.load_transcript(session_id)

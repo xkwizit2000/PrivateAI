@@ -1,3 +1,9 @@
+"""Environment-backed configuration for PrivateAI.
+
+This module only defines constants loaded from the environment / .env file;
+there are no runtime functions to document here.
+"""
+
 import os
 from pathlib import Path
 

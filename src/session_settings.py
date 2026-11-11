@@ -27,6 +27,7 @@ class SessionSettings:
         default_think: bool = OLLAMA_THINK,
         default_timeout: float = OLLAMA_TIMEOUT_SECONDS,
     ) -> None:
+        """Load existing settings from path or start with empty overrides."""
         self.path = path
         self.default_think = default_think
         self.default_timeout = float(default_timeout)
@@ -35,9 +36,11 @@ class SessionSettings:
         self._load()
 
     def _safe_id(self, session_id: str | int) -> str:
+        """Validate and normalize a session ID used as a settings key."""
         return safe_session_id(session_id)
 
     def _load(self) -> None:
+        """Read settings JSON from disk into memory."""
         if not self.path.exists():
             self._data = {}
             return
@@ -56,6 +59,7 @@ class SessionSettings:
             self._data = {}
 
     def _save(self) -> None:
+        """Atomically write the in-memory settings map to disk."""
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(
             json.dumps(self._data, ensure_ascii=False, indent=2),
@@ -65,15 +69,18 @@ class SessionSettings:
         temporary.replace(self.path)
 
     def _entry(self, session_id: str | int) -> dict[str, Any]:
+        """Return a copy of the stored override dict for a session (or empty)."""
         return dict(self._data.get(self._safe_id(session_id), {}))
 
     def get_think(self, session_id: str | int) -> bool:
+        """Return whether thinking/reasoning mode is enabled for this chat."""
         value = self._entry(session_id).get("think")
         if isinstance(value, bool):
             return value
         return self.default_think
 
     def set_think(self, session_id: str | int, enabled: bool) -> bool:
+        """Persist thinking mode for this chat and return the applied value."""
         safe_id = self._safe_id(session_id)
         entry = self._entry(session_id)
         entry["think"] = enabled
@@ -82,12 +89,14 @@ class SessionSettings:
         return enabled
 
     def get_verbose(self, session_id: str | int) -> bool:
+        """Return whether verbose reasoning streaming is enabled for this chat."""
         value = self._entry(session_id).get("verbose")
         if isinstance(value, bool):
             return value
         return False
 
     def set_verbose(self, session_id: str | int, enabled: bool) -> bool:
+        """Persist verbose mode for this chat and return the applied value."""
         safe_id = self._safe_id(session_id)
         entry = self._entry(session_id)
         entry["verbose"] = enabled
@@ -96,12 +105,14 @@ class SessionSettings:
         return enabled
 
     def get_timeout(self, session_id: str | int) -> float:
+        """Return the Ollama chat timeout in seconds for this chat."""
         value = self._entry(session_id).get("timeout_seconds")
         if isinstance(value, (int, float)) and value > 0:
             return float(value)
         return self.default_timeout
 
     def set_timeout(self, session_id: str | int, seconds: float) -> float:
+        """Persist a bounded chat timeout for this chat and return the applied value."""
         if seconds < MIN_TIMEOUT_SECONDS or seconds > MAX_TIMEOUT_SECONDS:
             raise ValueError(
                 f"Timeout must be between {int(MIN_TIMEOUT_SECONDS)} "
@@ -115,6 +126,7 @@ class SessionSettings:
         return float(seconds)
 
     def clear_timeout(self, session_id: str | int) -> float:
+        """Remove a timeout override and return the restored default."""
         safe_id = self._safe_id(session_id)
         entry = self._entry(session_id)
         entry.pop("timeout_seconds", None)

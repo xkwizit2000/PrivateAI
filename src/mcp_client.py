@@ -32,10 +32,12 @@ _WRITE_TOOL_MARKERS = (
 
 
 def _sanitize_name(value: str) -> str:
+    """Replace characters unsafe for Ollama tool names with underscores."""
     return re.sub(r"[^a-zA-Z0-9_-]", "_", value)
 
 
 def _is_write_tool(name: str) -> bool:
+    """Heuristic: True when a tool name looks like it can mutate data."""
     lowered = name.lower()
     return any(marker in lowered for marker in _WRITE_TOOL_MARKERS)
 
@@ -44,6 +46,7 @@ class McpHub:
     """Owns stdio MCP server subprocesses for the bot process lifetime."""
 
     def __init__(self, config_path: Path, readonly: bool | None = None) -> None:
+        """Load MCP config path and optionally force readonly tool filtering."""
         self.config_path = config_path
         self.readonly = MCP_READONLY if readonly is None else readonly
         self._exit_stack = AsyncExitStack()
@@ -53,9 +56,11 @@ class McpHub:
 
     @property
     def tool_names(self) -> list[str]:
+        """Sorted list of qualified tool names currently registered."""
         return sorted(self._tools)
 
     async def start(self) -> None:
+        """Connect to every mcpServers entry in the config file."""
         if not self.config_path.exists():
             logger.warning("MCP config not found at %s; running without tools.", self.config_path)
             return
@@ -81,6 +86,7 @@ class McpHub:
         )
 
     async def _connect_server(self, server_name: str, server_cfg: dict[str, Any]) -> None:
+        """Spawn one stdio MCP server and register its exposed tools."""
         command = server_cfg.get("command")
         if not command:
             raise ValueError(f"MCP server '{server_name}' is missing 'command'")
@@ -115,6 +121,7 @@ class McpHub:
             logger.info("Registered tool %s -> %s.%s", qualified, server_name, tool.name)
 
     def as_ollama_tools(self) -> list[dict[str, Any]]:
+        """Convert registered MCP tools into Ollama function-calling tool schemas."""
         tools: list[dict[str, Any]] = []
         for qualified, meta in self._tools.items():
             tools.append(
@@ -130,6 +137,7 @@ class McpHub:
         return tools
 
     async def call_tool(self, qualified_name: str, arguments: dict[str, Any] | None = None) -> str:
+        """Invoke a registered MCP tool and return its text result (or an error string)."""
         meta = self._tools.get(qualified_name)
         if meta is None:
             return f"Error: unknown tool '{qualified_name}'"
@@ -155,6 +163,7 @@ class McpHub:
         return output
 
     async def close(self) -> None:
+        """Tear down all MCP stdio sessions and clear registered tools."""
         await self._exit_stack.aclose()
         self._sessions.clear()
         self._tools.clear()

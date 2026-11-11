@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AppRuntime:
+    """Shared settings, memory, RAG, and MCP hub used by both chat front ends."""
+
     settings: SessionSettings
     memory: MemoryStore
     rag: RagStore | None
@@ -42,6 +44,7 @@ class AppRuntime:
 
     @classmethod
     async def create(cls) -> AppRuntime:
+        """Construct runtime services, optionally backfill RAG, and start MCP."""
         settings = SessionSettings(
             SESSION_SETTINGS_PATH,
             default_think=OLLAMA_THINK,
@@ -94,6 +97,7 @@ class AppRuntime:
         return cls(settings=settings, memory=memory, rag=rag, hub=hub)
 
     async def close(self) -> None:
+        """Shut down MCP servers owned by this runtime."""
         await self.hub.close()
 
     async def handle_text(
@@ -103,6 +107,7 @@ class AppRuntime:
         *,
         progress: ProgressCallback | None = None,
     ) -> str:
+        """Route slash commands or run the agent for a normal chat turn."""
         command = parse_slash_command(text)
         if command is not None:
             reply = await handle_command(self.settings, session_id, command)

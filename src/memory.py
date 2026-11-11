@@ -28,6 +28,7 @@ class MemoryStore:
         summarize_every: int = 6,
         max_context_chars: int = 12_000,
     ) -> None:
+        """Create a memory store rooted at data_dir with summarization knobs."""
         self.data_dir = data_dir
         self.recent_turns = recent_turns
         self.summarize_every = summarize_every
@@ -36,8 +37,11 @@ class MemoryStore:
         self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     def _safe_session_id(self, session_id: str | int) -> str:
+        """Validate and normalize a session ID for use in filenames."""
         return safe_session_id(session_id)
+
     def _paths(self, session_id: str | int) -> tuple[Path, Path]:
+        """Return (transcript.jsonl, summary.json) paths for a session."""
         safe_id = self._safe_session_id(session_id)
         return (
             self.data_dir / f"{safe_id}.jsonl",
@@ -45,11 +49,13 @@ class MemoryStore:
         )
 
     def _lock(self, session_id: str | int) -> asyncio.Lock:
+        """Return the per-session asyncio lock, creating it if needed."""
         safe_id = self._safe_session_id(session_id)
         return self._locks.setdefault(safe_id, asyncio.Lock())
 
     @staticmethod
     def _read_summary(path: Path) -> dict[str, Any]:
+        """Load a summary JSON file, or return empty defaults if missing/corrupt."""
         if not path.exists():
             return {"summary": "", "summarized_messages": 0}
         try:
@@ -60,6 +66,7 @@ class MemoryStore:
 
     @staticmethod
     def _read_records(path: Path) -> list[dict[str, Any]]:
+        """Load JSONL transcript records, skipping malformed lines."""
         if not path.exists():
             return []
 

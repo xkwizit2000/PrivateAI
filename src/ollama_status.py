@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 def _format_bytes(value: Any) -> str | None:
+    """Format a byte count as a human-readable size string."""
     try:
         size = float(value)
     except (TypeError, ValueError):
@@ -31,6 +32,7 @@ def _format_bytes(value: Any) -> str | None:
 
 
 def _format_expires(expires_at: Any, *, now: datetime | None = None) -> str | None:
+    """Format an Ollama model expiry timestamp as a short relative string."""
     if expires_at is None:
         return None
     if not isinstance(expires_at, datetime):
@@ -53,6 +55,7 @@ def _format_expires(expires_at: Any, *, now: datetime | None = None) -> str | No
 
 
 def _model_line(model: Any, *, now: datetime | None = None) -> str:
+    """Format one running Ollama model as a bullet line for /status."""
     name = getattr(model, "name", None) or getattr(model, "model", None) or "unknown"
     bits: list[str] = []
 

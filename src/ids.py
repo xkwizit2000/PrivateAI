@@ -9,6 +9,7 @@ _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def safe_session_id(session_id: str | int) -> str:
+    """Validate a Telegram/Session ID and return a filesystem-safe string form."""
     value = str(session_id).strip()
     if not value or ".." in value or "/" in value or "\\" in value:
         raise ValueError("Invalid session ID")
