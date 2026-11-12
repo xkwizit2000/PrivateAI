@@ -262,10 +262,10 @@ Per Telegram chat, override it without restarting:
 sends file tools only when the message looks like it needs them, `on` always
 sends them, `off` never does.
 
-`/status` lists every per-chat setting (think, verbose, timeout, tools, and any
-future ones), plus Ollama host/chat model and currently loaded models from
-`GET /api/ps`. Each of `/think`, `/verbose`, and `/timeout` also accepts
-`status` (or no args) for that setting alone.
+`/status` answers "is everything the agent needs working?" in one message; see
+[`/status`: health of every critical component](#status-health-of-every-critical-component).
+Each of `/think`, `/verbose`, and `/timeout` also accepts `status` (or no args) for
+that setting alone.
 
 With `/think on` and `/verbose on`, model reasoning streams into the temporary
 status message. With `/verbose off`, status stays as the simple progress
@@ -292,6 +292,75 @@ OLLAMA_HOST=http://gpu-server.internal:11434
 
 Use a firewall, WireGuard, Tailscale, or an SSH tunnel. Ollama does not provide
 an authentication boundary suitable for direct public Internet exposure.
+
+## `/status`: health of every critical component
+
+`/status` (compact, about 2,500 characters) and `/status full` (everything, split
+into Telegram/Session-sized messages) work identically on Telegram and Session. The
+first line is the verdict: `Overall: OK`, `Overall: DEGRADED - <issues>` or
+`Overall: DOWN - <issues>`. Every section header carries a marker
+(✅ ok, ⚠️ warn, ❌ fail; set `STATUS_MARKERS=text` for `OK/WARN/FAIL`).
+
+| Section | What it shows |
+| --- | --- |
+| AGENT | uptime, version (commit + branch baked into the image), chat backend, container memory/CPU (cgroup v2), event-loop lag, pending tasks |
+| OLLAMA | reachability + version, whether the configured chat model is loaded and fully on GPU, loaded context vs `OLLAMA_NUM_CTX`, keep-alive, embedding model location (CPU/GPU), last/average chat-call latency, errors/retries since start, a call "in flight" too long (possibly stuck) |
+| TOOLS | per MCP server: connected, transport, exposed vs hidden tool count, allowlist source (default/custom/all), readonly, description trimming, routing mode, `MEMORY_TOOLS`; full view lists every exposed/hidden tool |
+| MEMORY | memory-service reachability (authenticated), breaker, turns/chunks/sessions/facts, DB size, last turn, `MEMORY_BACKEND`/`RECALL`/`DUAL_WRITE`, shadow counters since start, dual-write currency against the legacy transcript, legacy summary backlog/age, RAG model/`num_gpu`/chunks |
+| HOST | load vs CPU count, CPU %, memory/swap, disk (`/` and the data volume), GPU busy %, VRAM, CPU/GPU/NVMe temperatures, host uptime, pending reboot, systemd state of `ollama`/`docker`/`ollama-watchdog.timer`, container state/health, Ollama restarts by the watchdog in 24 h |
+| THIS CHAT | per-chat think/verbose/timeout/tools and how much history feeds the prompt (never any ID) |
+
+`/status` is read-only and fast (about 1 s, hard-capped per probe): it only calls
+`GET /api/version` and `GET /api/ps` on Ollama, `GET /healthz` + `GET /v1/stats` on
+the memory service and reads local files. It never loads, unloads or generates with a
+model. A failing probe never breaks the message: its section shows `n/a (reason)` and
+counts as a WARN. The text never contains tokens, mnemonics, IDs or URLs with
+credentials; secret env values and token-shaped strings are also scrubbed from the
+final text.
+
+### Verdict thresholds
+
+All thresholds are environment variables (`STATUS_*`, listed in `.env.example`;
+`docker-compose.yml` passes them with these defaults).
+
+* **DOWN** (a FAIL that stops the agent): Ollama unreachable; memory service
+  unreachable while `MEMORY_BACKEND=service`.
+* **DEGRADED** (any WARN/FAIL below): host exporter data missing, corrupt or older
+  than 120 s (`STATUS_HOST_STALE_SECONDS`); load5 per CPU >= 1.0; host CPU >= 90 %;
+  available memory < 10 %; swap >= 50 %; disk >= 85 % (FAIL at 95 %); VRAM >= 95 %;
+  CPU/GPU temperature >= 90 C; **>= 3 Ollama restarts by the watchdog in 24 h**;
+  `ollama`/`docker` unit not active (FAIL), watchdog timer not active; container
+  not running/unhealthy (FAIL); chat model not fully on GPU; loaded context differs
+  from `OLLAMA_NUM_CTX`; embedding model on GPU although `RAG_EMBED_NUM_GPU=0`;
+  chat call in flight longer than `OLLAMA_STUCK_WARN_SECONDS`; chat-model error in
+  the last 15 min; event-loop lag >= 250 ms; container memory >= 90 % of its limit;
+  an MCP server not connected; memory-service breaker not closed; memory service
+  unreachable (FAIL marker); dual-write drift (more than 10 legacy records missing in
+  the service, or the newest legacy record more than 5 min ahead of the service's
+  newest turn; the service de-duplicates identical messages, so a few missing records
+  are normal); summary backlog > 24 records, or a summary older than 7 days while a
+  backlog exists.
+* Informational only: chat model not loaded (it loads on the next message), pending
+  reboot, unrelated failed systemd units, "last error" older than 15 min.
+
+### Host exporter (read-only)
+
+The bot runs in a container, so host load, temperatures, GPU, systemd and the Ollama
+watchdog come from a tiny root-owned exporter: `ops/pai-status/` installs
+`/usr/local/sbin/pai-status-export` plus `pai-status-export.timer` (every 30 s,
+`Nice=19`, idle I/O, 20 s hard timeout), which atomically writes
+`/var/lib/pai-status/host.json` (0644, no secrets, no chat data). Compose bind-mounts
+`/var/lib/pai-status` **read-only** at `/host-status`; nothing else of the host is
+mounted. Install/remove instructions: [`ops/pai-status/README.md`](ops/pai-status/README.md).
+Without the exporter, `/status` still works and shows the host section as
+`n/a (exporter not running)` (WARN).
+
+### Version in `/status`
+
+`docker compose build` stamps the commit and branch into `/app/VERSION`: the
+Dockerfile's `version` stage reads `HEAD`/`refs`/`packed-refs` from `.git` (the only
+parts `.dockerignore` lets into the build context). `GIT_COMMIT`/`GIT_BRANCH` build
+args override it; without git metadata `/status` shows `v unknown`.
 
 ## MCP tool configuration
 
@@ -636,7 +705,9 @@ python -m unittest discover -s tests -v
 The tests cover transcript persistence, recent-turn loading, summary thresholds,
 session-path validation, conversation RAG, tool routing, the MCP SSE transport
 (against an in-process fake SSE server), and the memory-service client (timeouts,
-circuit breaker, dual-write, shadow/`on` recall, per-group tool routing). The memory
+circuit breaker, dual-write, shadow/`on` recall, per-group tool routing), and the
+`/status` report (verdict thresholds, collectors, secret scrubbing, failure isolation)
+plus the host exporter. The memory
 service has its own suite: `docker build --target test -t memsvc-test memory-service`.
 
 ## Project layout
@@ -661,7 +732,11 @@ PrivateAI/
 │   ├── memory.py         durable session memory
 │   ├── memory_service_client.py  memory-service client (dual-write, shadow/on recall)
 │   ├── rag.py            conversation RAG store
-│   └── runtime.py        shared agent/MCP/memory bootstrap
+│   ├── runtime.py        shared agent/MCP/memory bootstrap
+│   ├── runtime_stats.py  chat-call tracking (metadata only) for /status
+│   └── status_report.py  /status collectors, verdict and formatting
+├── ops/pai-status/       read-only host status exporter (systemd timer)
+├── scripts/gen_version.py  stamps commit/branch into the image
 └── tests/
 ```
 
