@@ -7,7 +7,12 @@ from dataclasses import dataclass
 
 from .config import OLLAMA_THINK, OLLAMA_TIMEOUT_SECONDS
 from .ollama_status import fetch_ollama_status
-from .session_settings import MAX_TIMEOUT_SECONDS, MIN_TIMEOUT_SECONDS, SessionSettings
+from .session_settings import (
+    MAX_TIMEOUT_SECONDS,
+    MIN_TIMEOUT_SECONDS,
+    TOOL_MODE_LABELS,
+    SessionSettings,
+)
 
 _COMMAND_RE = re.compile(r"^/([A-Za-z0-9_]+)(?:@[A-Za-z0-9_]+)?(?:\s+(.*))?$", re.DOTALL)
 
@@ -46,6 +51,8 @@ async def handle_command(
         return _timeout(settings, session_id, command.args)
     if command.name == "verbose":
         return _verbose(settings, session_id, command.args)
+    if command.name == "tools":
+        return _tools(settings, session_id, command.args)
     return None
 
 
@@ -158,3 +165,44 @@ def _verbose(settings: SessionSettings, session_id: str | int, args: list[str]) 
         )
 
     return "Usage: /verbose [on|off|status]"
+
+
+_TOOLS_WORDS = {
+    "auto": "auto",
+    "on": "always",
+    "true": "always",
+    "1": "always",
+    "always": "always",
+    "off": "never",
+    "false": "never",
+    "0": "never",
+    "never": "never",
+}
+
+
+def _tools(settings: SessionSettings, session_id: str | int, args: list[str]) -> str:
+    """Handle /tools to show or set tool routing (auto|on|off) for this chat."""
+    current = settings.get_tool_mode(session_id)
+    normalized = [arg.lower() for arg in args]
+
+    if not normalized or normalized[0] in {"status", "show"}:
+        return (
+            f"Tools are {TOOL_MODE_LABELS[current]} for this chat "
+            f"(default {TOOL_MODE_LABELS.get(settings.default_tools, settings.default_tools)}).\n"
+            "auto = send file tools only when the message looks like it needs them "
+            "(faster plain chat); on = always send them; off = never.\n"
+            "Use /tools auto, /tools on, /tools off or /tools reset."
+        )
+
+    if normalized[0] in {"reset", "default", "clear"}:
+        restored = settings.clear_tool_mode(session_id)
+        return (
+            f"Tools reset to default ({TOOL_MODE_LABELS.get(restored, restored)}) "
+            f"for this chat.\nStatus: tools={TOOL_MODE_LABELS.get(restored, restored)}"
+        )
+
+    mode = _TOOLS_WORDS.get(normalized[0])
+    if mode is None:
+        return "Usage: /tools [auto|on|off|reset|status]"
+    settings.set_tool_mode(session_id, mode)
+    return f"Tool routing set for this chat.\nStatus: tools={TOOL_MODE_LABELS[mode]}"

@@ -25,6 +25,7 @@ from .config import (
     RAG_MIN_SCORE,
     RAG_TOP_K,
     SESSION_SETTINGS_PATH,
+    TOOL_ROUTING,
 )
 from .mcp_client import McpHub
 from .memory import MemoryStore
@@ -50,6 +51,7 @@ class AppRuntime:
             SESSION_SETTINGS_PATH,
             default_think=OLLAMA_THINK,
             default_timeout=OLLAMA_TIMEOUT_SECONDS,
+            default_tools=TOOL_ROUTING,
         )
         logger.info("Session settings enabled at %s", SESSION_SETTINGS_PATH)
 
@@ -121,6 +123,7 @@ class AppRuntime:
         think = self.settings.get_think(session_id)
         timeout_seconds = self.settings.get_timeout(session_id)
         verbose = self.settings.get_verbose(session_id)
+        tool_mode = self.settings.get_tool_mode(session_id)
         return await run_agent(
             text,
             hub=self.hub,
@@ -132,4 +135,5 @@ class AppRuntime:
             think=think,
             timeout_seconds=timeout_seconds,
             verbose=verbose,
+            tool_mode=tool_mode,
         )

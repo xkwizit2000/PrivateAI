@@ -48,6 +48,13 @@ MCP_TOOL_ALLOWLIST = os.getenv("MCP_TOOL_ALLOWLIST", "").strip()
 MCP_TOOL_DESC_MAX_CHARS = int(os.getenv("MCP_TOOL_DESC_MAX_CHARS", "200") or "200")
 # Cap (characters) for each parameter description inside tool schemas (0 = unlimited).
 MCP_PARAM_DESC_MAX_CHARS = int(os.getenv("MCP_PARAM_DESC_MAX_CHARS", "80") or "80")
+# Tool routing: auto = send tools only when the message looks like it needs file
+# access; always = always send tools; never = never send tools.
+_tool_routing_raw = os.getenv("TOOL_ROUTING", "auto").strip().lower() or "auto"
+TOOL_ROUTING = _tool_routing_raw if _tool_routing_raw in {"auto", "always", "never"} else "auto"
+# In auto mode, keep tools on for follow-up messages this long (seconds) after a
+# turn that matched the file-access check or actually called a tool.
+TOOL_ROUTING_FOLLOWUP_SECONDS = float(os.getenv("TOOL_ROUTING_FOLLOWUP_SECONDS", "600") or "600")
 MEMORY_DIR = Path(os.getenv("MEMORY_DIR", PROJECT_ROOT / "data" / "sessions"))
 SESSION_SETTINGS_PATH = Path(
     os.getenv("SESSION_SETTINGS_PATH", PROJECT_ROOT / "data" / "session_settings.json")

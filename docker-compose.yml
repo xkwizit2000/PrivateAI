@@ -23,6 +23,11 @@ services:
       # Cap on tool / parameter description length sent to Ollama (0 = unlimited).
       MCP_TOOL_DESC_MAX_CHARS: ${MCP_TOOL_DESC_MAX_CHARS:-200}
       MCP_PARAM_DESC_MAX_CHARS: ${MCP_PARAM_DESC_MAX_CHARS:-80}
+      # auto = send tools only when a message looks like it needs file access;
+      # always = every request; never = no tools.
+      TOOL_ROUTING: ${TOOL_ROUTING:-auto}
+      # In auto mode, follow-ups keep tools on this long (seconds) after a file turn.
+      TOOL_ROUTING_FOLLOWUP_SECONDS: ${TOOL_ROUTING_FOLLOWUP_SECONDS:-600}
       MCP_CONFIG_PATH: /app/mcp.json
     extra_hosts:
       - "host.docker.internal:host-gateway"

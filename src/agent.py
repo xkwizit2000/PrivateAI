@@ -25,10 +25,12 @@ from .config import (
     OLLAMA_STUCK_WARN_SECONDS,
     OLLAMA_THINK,
     OLLAMA_TIMEOUT_SECONDS,
+    TOOL_ROUTING,
 )
 from .mcp_client import McpHub
 from .memory import MemoryStore
 from .rag import RagStore
+from .tool_routing import DEFAULT_ROUTER, ToolRouter
 
 logger = logging.getLogger(__name__)
 ProgressCallback = Callable[[str, str | None], Awaitable[None]]
@@ -453,8 +455,14 @@ async def run_agent(
     think: bool | None = None,
     timeout_seconds: float | None = None,
     verbose: bool = False,
+    tool_mode: str | None = None,
+    router: ToolRouter | None = None,
 ) -> str:
-    """Run one user turn, optionally using MCP tools via Ollama tool calling."""
+    """Run one user turn, optionally using MCP tools via Ollama tool calling.
+
+    ``tool_mode`` (auto|always|never; default TOOL_ROUTING) controls whether the
+    tool schemas are sent to the model for this turn.
+    """
     think_enabled = OLLAMA_THINK if think is None else think
     chat_timeout = (
         OLLAMA_TIMEOUT_SECONDS if timeout_seconds is None else float(timeout_seconds)
@@ -482,7 +490,19 @@ async def run_agent(
             messages.insert(insert_at, rag_message)
     messages.append({"role": "user", "content": user_prompt})
 
-    tools = hub.as_ollama_tools() if hub and hub.tool_names else None
+    router = router or DEFAULT_ROUTER
+    routing_mode = tool_mode or TOOL_ROUTING
+    if hub is not None and hub.tool_names:
+        decision = router.decide(routing_mode, session_id, user_prompt)
+        tools = hub.as_ollama_tools() if decision.tools_on else None
+        logger.info(
+            "tool routing: tools=%s reason=%s",
+            "on" if decision.tools_on else "off",
+            decision.reason,
+        )
+    else:
+        tools = None
+        logger.info("tool routing: tools=off reason=no MCP tools registered")
     logger.info(
         "Agent think mode=%s verbose=%s timeout=%.0fs",
         think_enabled,
@@ -606,7 +626,17 @@ async def run_agent(
                 arguments = dict(arguments)
             if progress is not None:
                 await progress("processing", name)
-            tool_result = await hub.call_tool(name, arguments)
+            if tools is None:
+                # The model was not given any tool schemas this turn; don't run
+                # a hallucinated call.
+                logger.warning("Model called tool %s although tools were off", name)
+                tool_result = (
+                    f"Error: tool '{name}' is not available for this message. "
+                    "Answer without tools."
+                )
+            else:
+                router.mark_active(session_id)
+                tool_result = await hub.call_tool(name, arguments)
             messages.append(
                 {
                     "role": "tool",

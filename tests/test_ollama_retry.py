@@ -151,7 +151,7 @@ class RunAgentRetryTests(unittest.IsolatedAsyncioTestCase):
             patch("src.agent._chat_with_monitoring", chat),
             patch("src.agent._wait_for_ollama", AsyncMock(return_value=True)),
         ):
-            reply = await run_agent("hi", hub=hub)
+            reply = await run_agent("hi", hub=hub, tool_mode="always")
 
         self.assertEqual(reply, "done")
         self.assertEqual(chat.await_count, 3)
@@ -176,7 +176,7 @@ class RunAgentRetryTests(unittest.IsolatedAsyncioTestCase):
             patch("src.agent._chat_with_monitoring", chat),
             patch("src.agent._wait_for_ollama", wait),
         ):
-            reply = await run_agent("hi", hub=hub)
+            reply = await run_agent("hi", hub=hub, tool_mode="always")
 
         self.assertEqual(reply, OLLAMA_UNAVAILABLE_MESSAGE)
         self.assertEqual(chat.await_count, 3)

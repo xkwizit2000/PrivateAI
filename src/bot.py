@@ -76,7 +76,7 @@ async def keep_typing(message: Message) -> None:
 
 
 async def _reply_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle Telegram slash commands (/think, /timeout, /verbose, /status)."""
+    """Handle Telegram slash commands (/think, /timeout, /verbose, /tools, /status)."""
     if update.message is None or update.effective_user is None:
         return
     if not _authorized(update):
@@ -217,6 +217,7 @@ def main() -> None:
     app.add_handler(CommandHandler("think", _reply_command))
     app.add_handler(CommandHandler("timeout", _reply_command))
     app.add_handler(CommandHandler("verbose", _reply_command))
+    app.add_handler(CommandHandler("tools", _reply_command))
     app.add_handler(CommandHandler("status", _reply_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 

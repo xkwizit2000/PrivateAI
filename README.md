@@ -181,6 +181,8 @@ Available variables:
 | `MCP_TOOL_ALLOWLIST` | empty (= built-in 9-tool default) | Comma-separated tools exposed to the model; registered (`filesystem_read_text_file`) or server-local (`read_text_file`) names, case-insensitive; `all`/`*` = everything. Applied on top of `MCP_READONLY` |
 | `MCP_TOOL_DESC_MAX_CHARS` | `200` | Max characters of each tool description sent to Ollama (`0` = unlimited) |
 | `MCP_PARAM_DESC_MAX_CHARS` | `80` | Max characters of each parameter description in tool schemas (`0` = unlimited) |
+| `TOOL_ROUTING` | `auto` | `auto`: send tool schemas only when the message looks like it needs file access; `always`: every request; `never`: no tools. Overridable per chat with `/tools` |
+| `TOOL_ROUTING_FOLLOWUP_SECONDS` | `600` | In `auto` mode, follow-up messages keep tools on for this long after a turn that needed files or called a tool |
 | `MEMORY_DIR` | `<project>/data/sessions` | Durable per-chat memory directory |
 | `MEMORY_RECENT_TURNS` | `4` | Recent turns inserted into each model prompt |
 | `MEMORY_SUMMARIZE_EVERY` | `6` | Completed turns between summary updates |
@@ -239,9 +241,18 @@ Per Telegram chat, override it without restarting:
 /timeout status
 /timeout 600
 /timeout reset
+/tools status
+/tools auto
+/tools on
+/tools off
+/tools reset
 ```
 
-`/status` lists every per-chat setting (think, verbose, timeout, and any
+`/tools` sets tool routing for the chat: `auto` (default, from `TOOL_ROUTING`)
+sends file tools only when the message looks like it needs them, `on` always
+sends them, `off` never does.
+
+`/status` lists every per-chat setting (think, verbose, timeout, tools, and any
 future ones), plus Ollama host/chat model and currently loaded models from
 `GET /api/ps`. Each of `/think`, `/verbose`, and `/timeout` also accepts
 `status` (or no args) for that setting alone.
@@ -315,6 +326,12 @@ Security notes:
   `MCP_TOOL_DESC_MAX_CHARS` / `MCP_PARAM_DESC_MAX_CHARS` shorten the descriptions
   (names, types, `required` and `enum` are never changed). A call to a hidden
   tool is rejected with an error message. The exposed tools are logged at startup.
+- With `TOOL_ROUTING=auto` (default) the schemas are only sent when the user's
+  message matches a cheap keyword/path/file-extension check (or follows such a
+  turn within `TOOL_ROUTING_FOLLOWUP_SECONDS`); every request logs
+  `tool routing: tools=on|off reason=...`. Plain chat then carries no tool
+  schemas at all. Use `/tools on` (or `TOOL_ROUTING=always`) if a file request
+  is ever missed.
 - Do not add unrestricted shell tools without command allowlists and explicit
   user approval.
 - An empty or missing `mcp.json` leaves the bot in chat-only mode.

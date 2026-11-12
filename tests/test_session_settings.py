@@ -74,7 +74,8 @@ class SessionSettingsTests(unittest.TestCase):
             self.assertIn("• think: on (default off)", text)
             self.assertIn("• verbose: on", text)
             self.assertIn("• timeout: 600s (default 180s)", text)
-            self.assertIn("Change with: /think, /verbose, /timeout", text)
+            self.assertIn("• tools: auto (default auto)", text)
+            self.assertIn("Change with: /think, /verbose, /timeout, /tools", text)
 
 
 if __name__ == "__main__":

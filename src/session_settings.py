@@ -8,13 +8,16 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .config import OLLAMA_THINK, OLLAMA_TIMEOUT_SECONDS
+from .config import OLLAMA_THINK, OLLAMA_TIMEOUT_SECONDS, TOOL_ROUTING
 from .ids import safe_session_id
 
 logger = logging.getLogger(__name__)
 
 MIN_TIMEOUT_SECONDS = 30.0
 MAX_TIMEOUT_SECONDS = 3600.0
+TOOL_MODES = ("auto", "always", "never")
+# User-facing words for /tools and /status.
+TOOL_MODE_LABELS = {"auto": "auto", "always": "on", "never": "off"}
 
 
 class SessionSettings:
@@ -26,11 +29,13 @@ class SessionSettings:
         *,
         default_think: bool = OLLAMA_THINK,
         default_timeout: float = OLLAMA_TIMEOUT_SECONDS,
+        default_tools: str = TOOL_ROUTING,
     ) -> None:
         """Load existing settings from path or start with empty overrides."""
         self.path = path
         self.default_think = default_think
         self.default_timeout = float(default_timeout)
+        self.default_tools = default_tools
         self._data: dict[str, dict[str, Any]] = {}
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._load()
@@ -104,6 +109,36 @@ class SessionSettings:
         self._save()
         return enabled
 
+    def get_tool_mode(self, session_id: str | int) -> str:
+        """Return the tool routing mode (auto|always|never) for this chat."""
+        value = self._entry(session_id).get("tools")
+        if value in TOOL_MODES:
+            return str(value)
+        return self.default_tools
+
+    def set_tool_mode(self, session_id: str | int, mode: str) -> str:
+        """Persist the tool routing mode for this chat and return it."""
+        if mode not in TOOL_MODES:
+            raise ValueError(f"Tool mode must be one of: {', '.join(TOOL_MODES)}")
+        safe_id = self._safe_id(session_id)
+        entry = self._entry(session_id)
+        entry["tools"] = mode
+        self._data[safe_id] = entry
+        self._save()
+        return mode
+
+    def clear_tool_mode(self, session_id: str | int) -> str:
+        """Remove the tool routing override and return the restored default."""
+        safe_id = self._safe_id(session_id)
+        entry = self._entry(session_id)
+        entry.pop("tools", None)
+        if entry:
+            self._data[safe_id] = entry
+        else:
+            self._data.pop(safe_id, None)
+        self._save()
+        return self.default_tools
+
     def get_timeout(self, session_id: str | int) -> float:
         """Return the Ollama chat timeout in seconds for this chat."""
         value = self._entry(session_id).get("timeout_seconds")
@@ -145,6 +180,7 @@ class SessionSettings:
         think = self.get_think(session_id)
         verbose = self.get_verbose(session_id)
         timeout = self.get_timeout(session_id)
+        tools = self.get_tool_mode(session_id)
         return [
             (
                 "think",
@@ -155,6 +191,11 @@ class SessionSettings:
             (
                 "timeout",
                 f"{int(timeout)}s (default {int(self.default_timeout)}s)",
+            ),
+            (
+                "tools",
+                f"{TOOL_MODE_LABELS[tools]} "
+                f"(default {TOOL_MODE_LABELS.get(self.default_tools, self.default_tools)})",
             ),
         ]
 
