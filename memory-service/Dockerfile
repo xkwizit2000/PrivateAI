@@ -1,6 +1,6 @@
 FROM python:3.12-slim AS base
 
-ARG EMBED_MODEL=BAAI/bge-small-en-v1.5
+ARG EMBED_MODEL=snowflake/snowflake-arctic-embed-xs
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

@@ -85,7 +85,11 @@ def main(argv: list[str] | None = None) -> int:
             for k in tot:
                 tot[k] += getattr(r, k)
             print(f"{os.path.basename(f)[:16]}: +{r.turns_new} turns +{r.chunks_new} chunks ({r.turns_seen} seen)")
-        print(json.dumps({**tot, "seconds": round(time.perf_counter() - t0, 2)}))
+        import resource
+
+        print(json.dumps({**tot, "seconds": round(time.perf_counter() - t0, 2),
+                          "model_load_s": round(getattr(svc.embedder, "load_seconds", 0) or 0, 2),
+                          "peak_rss_mb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024)}))
     elif a.cmd == "search":
         res = svc.search(a.query, a.k, a.since, a.until, a.session, a.mode)
         if a.json:

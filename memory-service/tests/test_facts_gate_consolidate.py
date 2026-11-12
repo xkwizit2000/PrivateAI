@@ -35,10 +35,15 @@ def test_gate_cues():
     assert refers_to_past("do you remember what we decided about the database?")
     assert refers_to_past("Last time you said to use restic")
     assert not refers_to_past("write a haiku about spring")
+    # narration of new events / imperatives are NOT references to earlier chats
+    assert not refers_to_past("I decided to delete them all and I set a boundary")
+    assert not refers_to_past("Remember to add milk to the list")
+    assert refers_to_past("what did we decide about the database")
+    assert refers_to_past("Do you have a history of our previous conversations?")
 
 
 def test_gate_decisions():
-    ok, _ = should_inject("what did we decide", 0.5, 0.45, 0.72)
+    ok, _ = should_inject("what did we decide", 0.5, 0.45, 0.72)  # cue + cos
     assert ok
     assert not should_inject("write a haiku", 0.5, 0.45, 0.72)[0]
     assert should_inject("write a haiku", 0.8, 0.45, 0.72)[0]

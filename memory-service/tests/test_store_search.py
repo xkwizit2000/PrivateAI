@@ -112,3 +112,12 @@ def test_get_conversation_around_and_date(svc):
     assert "restic" in day and len(day) <= svc.s.conversation_max_chars
     assert svc.get_conversation(date="2020-01-01").startswith("No conversation")
     assert svc.get_conversation().startswith("Give")
+
+
+def test_duplicate_texts_collapsed(svc):
+    for minute in (1, 2):
+        svc.store.add_turns([{"session_id": "s1", "role": "user", "content": "Can you clear all of your memory?",
+                              "timestamp": f"2026-05-01T10:0{minute}:00+00:00"}])
+    hits = svc.search_chunks("clear all of your memory", k=5).hits
+    texts = [h.text for h in hits if "clear all" in h.text]
+    assert len(texts) == 1

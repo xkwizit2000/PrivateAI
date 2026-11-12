@@ -138,10 +138,10 @@ class MemoryService:
         fts_rank: dict[int, int] = {}
         vec_cos: dict[int, float] = {}
         for rank, (cid, cos) in enumerate(vec_hits):
-            fused[cid] = fused.get(cid, 0.0) + 1.0 / (s.rrf_k + rank + 1)
+            fused[cid] = fused.get(cid, 0.0) + s.vec_weight / (s.rrf_k + rank + 1)
             vec_rank[cid], vec_cos[cid] = rank + 1, cos
         for rank, (cid, _bm) in enumerate(fts_hits):
-            fused[cid] = fused.get(cid, 0.0) + 1.0 / (s.rrf_k + rank + 1)
+            fused[cid] = fused.get(cid, 0.0) + s.fts_weight / (s.rrf_k + rank + 1)
             fts_rank[cid] = rank + 1
         if not fused:
             return SearchResult([], top_cos, ms=(time.perf_counter() - t0) * 1000, embed_ms=embed_ms)
@@ -164,7 +164,16 @@ class MemoryService:
                     role=row["role"], text=row["text"], score=sc, vec_cos=vec_cos.get(cid),
                     vec_rank=vec_rank.get(cid), fts_rank=fts_rank.get(cid),
                 )
-        hits = sorted(best_per_turn.values(), key=lambda h: -h.score)[:k]
+        # Drop exact-duplicate texts (e.g. a retried message) - they only waste output budget.
+        hits, seen = [], set()
+        for h in sorted(best_per_turn.values(), key=lambda h: -h.score):
+            key = " ".join(h.text.lower().split())
+            if key in seen:
+                continue
+            seen.add(key)
+            hits.append(h)
+            if len(hits) >= k:
+                break
         for h in hits:
             h.text = make_snippet(h.text, terms, s.search_snippet_chars)
         return SearchResult(hits, top_cos, ms=(time.perf_counter() - t0) * 1000, embed_ms=embed_ms)

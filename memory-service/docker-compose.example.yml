@@ -1,0 +1,47 @@
+# EXAMPLE ONLY - not part of the live docker-compose.yml. Merge deliberately at rollout.
+# The service has no published port: only containers on the internal network can reach it.
+services:
+  memory-service:
+    build: ./memory-service
+    image: privateai-memory:latest
+    container_name: privateai-memory
+    restart: unless-stopped
+    environment:
+      DB_PATH: /data/memory.db
+      AUTH_TOKEN: ${MEMORY_AUTH_TOKEN:-}        # set in .env; bot sends it as a Bearer header
+      EMBED_THREADS: "2"
+      OMP_NUM_THREADS: "2"
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}   # consolidation only
+      IDLE_SECONDS: "300"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data/memory:/data                     # SQLite DB (WAL); include in backups
+    networks: [memnet]
+    mem_limit: 768m
+    cpus: 2
+    pids_limit: 128
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+
+  privateai:                                     # existing service: only the additions are shown
+    environment:
+      MEMORY_BACKEND: service                    # legacy | service
+      MEMORY_SERVICE_URL: http://memory-service:8765
+      MEMORY_SERVICE_TOKEN: ${MEMORY_AUTH_TOKEN:-}
+    networks: [default, memnet]
+    depends_on:
+      memory-service:
+        condition: service_started               # NOT service_healthy: the bot must start without memory
+
+networks:
+  memnet:
+    internal: true   # no route to the internet or the host; the bot also stays on `default`

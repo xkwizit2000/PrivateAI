@@ -13,15 +13,18 @@ import re
 
 _CUES = re.compile(
     r"""(?ix)\b(?:
-        remember | recall | remind(?:ed|er)? | forgot(?:ten)? |
-        earlier | before | previous(?:ly)? | last\s+(?:time|week|month|night|session|conversation) |
+        (?:do|did|can|could|would)\s+you\s+(?:still\s+)?(?:remember|recall) |
+        remember\s+(?:when|what|how|which|where|who|the\s+\w+\s+(?:we|i|you)) |
+        as\s+you\s+(?:remember|recall) | remind\s+me\s+(?:what|how|which|when|where|who|of|about) |
+        you\s+(?:forgot|already\s+(?:said|told|know)) |
+        earlier | previous(?:ly)? | (?:said|mentioned|told\s+you|discussed|talked\s+about)\s+(?:this\s+)?before |
+        last\s+(?:time|week|month|night|session|conversation) |
         yesterday | the\s+other\s+day | back\s+when | (?:a\s+)?(?:few|couple\s+of)\s+(?:days|weeks|months)\s+ago |
         \d+\s+(?:days?|weeks?|months?)\s+ago | (?:last|this)\s+(?:mon|tues|wednes|thurs|fri|satur|sun)day |
-        we\s+(?:talked|discussed|decided|agreed|said|chose|set|did|made|looked|worked|went) |
-        you\s+(?:said|told|mentioned|suggested|recommended|wrote|gave|showed|explained) |
-        i\s+(?:told|mentioned|said|asked|showed|gave|set|chose|decided) |
-        (?:as|like)\s+(?:we|i)\s+(?:discussed|said|mentioned) | what\s+did\s+(?:we|i|you) |
-        (?:did|do)\s+(?:we|i|you)\s+(?:ever|already) | (?:our|my)\s+(?:earlier|previous|last|old)
+        we\s+(?:talked|discussed|decided|agreed|chose|spoke) | (?:what|which|where|when|how)\s+(?:did|have)\s+(?:we|i)\s+\w+ |
+        you\s+(?:said|told\s+me|mentioned|suggested|recommended|gave\s+me|showed\s+me|explained) |
+        i\s+(?:told|mentioned|said)\s+(?:you|that) | (?:as|like)\s+(?:we|i)\s+(?:discussed|said|mentioned) |
+        our\s+(?:earlier|previous|last|old|past)\s+\w+ | (?:history|record)\s+of\s+(?:our|my)
     )\b""",
 )
 

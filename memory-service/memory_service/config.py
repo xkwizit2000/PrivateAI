@@ -18,7 +18,7 @@ class Settings:
     """All tunables. Every field has an env var of the same name, upper-cased."""
 
     db_path: str = "/data/memory.db"
-    embed_model: str = "BAAI/bge-small-en-v1.5"
+    embed_model: str = "snowflake/snowflake-arctic-embed-xs"
     # "fastembed" (real model) or "hash" (dependency-free test embedder).
     embed_backend: str = "fastembed"
     embed_cache_dir: str = "/opt/models"
@@ -35,12 +35,14 @@ class Settings:
     recall_max_chars: int = 700
     # Retrieval.
     rrf_k: int = 60
+    vec_weight: float = 1.0
+    fts_weight: float = 1.0
     candidates: int = 50
     recency_weight: float = 0.15  # max boost for a brand-new chunk
     recency_tau_days: float = 45.0
     # Gate for server-side auto-injection (see gate.py); calibrated per model.
-    gate_cue_min_cos: float = 0.45
-    gate_strong_cos: float = 0.72
+    gate_cue_min_cos: float = 0.50
+    gate_strong_cos: float = 0.85
     # Min cosine for facts/summaries to appear in search_memory output.
     small_min_cos: float = 0.55
     # Facts.
