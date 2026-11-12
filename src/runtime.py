@@ -163,7 +163,11 @@ class AppRuntime:
         command = parse_slash_command(text)
         if command is not None:
             reply = await handle_command(
-                self.settings, session_id, command, memory_service=self.memory_service
+                self.settings,
+                session_id,
+                command,
+                memory_service=self.memory_service,
+                runtime=self,
             )
             if reply is not None:
                 return reply

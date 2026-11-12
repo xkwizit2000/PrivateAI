@@ -5,9 +5,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from typing import Any
+
 from .config import OLLAMA_THINK, OLLAMA_TIMEOUT_SECONDS
 from .memory_service_client import ServiceMemory
-from .ollama_status import fetch_ollama_status
+from .status_report import build_status_report
 from .session_settings import (
     MAX_TIMEOUT_SECONDS,
     MIN_TIMEOUT_SECONDS,
@@ -43,10 +45,15 @@ async def handle_command(
     session_id: str | int,
     command: ParsedCommand,
     memory_service: ServiceMemory | None = None,
+    runtime: Any = None,
 ) -> str | None:
-    """Return a reply for a known command, or None if the command is unknown."""
+    """Return a reply for a known command, or None if the command is unknown.
+
+    ``runtime`` (the AppRuntime) gives /status access to the hub, memory and RAG
+    stores; without it /status reports those sections as n/a.
+    """
     if command.name == "status":
-        return await _status(settings, session_id)
+        return await _status(settings, session_id, command.args, runtime, memory_service)
     if command.name == "think":
         return _think(settings, session_id, command.args)
     if command.name == "timeout":
@@ -95,11 +102,26 @@ async def _recall(service: ServiceMemory | None, args: list[str]) -> str:
     return text or "No matching memory."
 
 
-async def _status(settings: SessionSettings, session_id: str | int) -> str:
-    """Build the /status reply with session settings and live Ollama ps output."""
-    session_text = settings.format_status(session_id)
-    ollama_text = await fetch_ollama_status()
-    return f"{session_text}\n\n{ollama_text}"
+async def _status(
+    settings: SessionSettings,
+    session_id: str | int,
+    args: list[str],
+    runtime: Any = None,
+    memory_service: ServiceMemory | None = None,
+) -> str:
+    """Build the /status reply: /status = compact, /status full = detailed."""
+    full = bool(args) and args[0].lower() in {"full", "all", "detail", "details", "verbose"}
+    if args and not full:
+        return "Usage: /status [full]"
+    return await build_status_report(
+        settings=settings,
+        session_id=session_id,
+        memory=getattr(runtime, "memory", None),
+        rag=getattr(runtime, "rag", None),
+        hub=getattr(runtime, "hub", None),
+        memory_service=getattr(runtime, "memory_service", None) or memory_service,
+        full=full,
+    )
 
 
 def _think(settings: SessionSettings, session_id: str | int, args: list[str]) -> str:

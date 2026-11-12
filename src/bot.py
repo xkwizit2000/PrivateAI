@@ -24,6 +24,7 @@ from .config import (
     TELEGRAM_TOKEN,
 )
 from .runtime import AppRuntime
+from .status_report import split_message
 
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -94,11 +95,14 @@ async def _reply_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         _session_id(update),
         command,
         memory_service=runtime.memory_service,
+        runtime=runtime,
     )
     if reply is None:
         await update.message.reply_text(f"Unknown command: /{command.name}")
         return
-    await update.message.reply_text(reply)
+    # Replies (e.g. /status full) can exceed Telegram's 4096-character limit.
+    for part in split_message(reply, TELEGRAM_MAX_MESSAGE_LENGTH - 96):
+        await update.message.reply_text(part)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

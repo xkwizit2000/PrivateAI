@@ -1,11 +1,14 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from src.commands import handle_command, parse_slash_command
 from src.ids import safe_session_id
+from src.ollama_status import OllamaProbe
 from src.session_settings import SessionSettings
+from src.status_report import StatusConfig
 
 
 class IdsTests(unittest.TestCase):
@@ -49,18 +52,50 @@ class CommandsTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("think=on", reply or "")
             self.assertTrue(settings.get_think("123"))
 
-    async def test_status_includes_ollama_block(self):
+    async def test_status_includes_ollama_block_and_session_settings(self):
         with tempfile.TemporaryDirectory() as directory:
             settings = SessionSettings(Path(directory) / "settings.json")
             parsed = parse_slash_command("/status")
             assert parsed is not None
-            with patch(
-                "src.commands.fetch_ollama_status",
-                new=AsyncMock(return_value="Ollama (http://x):\n• running: none loaded"),
+
+            async def fake_probe(host, timeout):
+                return OllamaProbe("0.32.1", [], 5.0)
+
+            with patch("src.status_report.probe_ollama", fake_probe), patch(
+                "src.status_report.StatusConfig",
+                lambda: StatusConfig(host_file=Path(directory) / "none.json"),
             ):
                 reply = await handle_command(settings, "123", parsed)
-            self.assertIn("Session settings:", reply or "")
-            self.assertIn("Ollama (http://x):", reply or "")
+            text = reply or ""
+            self.assertTrue(text.startswith("Overall:"), text)
+            self.assertIn("OLLAMA · 0.32.1", text)
+            self.assertIn("not loaded", text)
+            self.assertIn("THIS CHAT", text)
+            self.assertIn("think off", text)
+            self.assertNotIn("123", text.replace("0.32.1", ""))  # no chat id leaks
+
+    async def test_status_full_and_bad_args_dispatch(self):
+        settings = SessionSettings(Path(tempfile.mkdtemp()) / "settings.json")
+        with patch("src.commands.build_status_report", new=AsyncMock(return_value="REPORT")) as build:
+            for text, full in (("/status", False), ("/status full", True), ("/status@PrivateAIBot FULL", True)):
+                parsed = parse_slash_command(text)
+                assert parsed is not None
+                self.assertEqual(await handle_command(settings, "1", parsed), "REPORT")
+                self.assertEqual(build.await_args.kwargs["full"], full)
+        parsed = parse_slash_command("/status bogus")
+        assert parsed is not None
+        self.assertEqual(await handle_command(settings, "1", parsed), "Usage: /status [full]")
+
+    async def test_status_passes_runtime_components(self):
+        settings = SessionSettings(Path(tempfile.mkdtemp()) / "settings.json")
+        runtime = SimpleNamespace(memory="M", rag="R", hub="H", memory_service="S")
+        parsed = parse_slash_command("/status")
+        assert parsed is not None
+        with patch("src.commands.build_status_report", new=AsyncMock(return_value="x")) as build:
+            await handle_command(settings, "1", parsed, runtime=runtime)
+        kwargs = build.await_args.kwargs
+        self.assertEqual((kwargs["memory"], kwargs["rag"], kwargs["hub"], kwargs["memory_service"]),
+                         ("M", "R", "H", "S"))
 
 
 if __name__ == "__main__":
