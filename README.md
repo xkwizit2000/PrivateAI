@@ -514,6 +514,10 @@ resend your message in a minute.` (the failed turn is not stored in memory).
 
 ## Memory service (shadow mode)
 
+> `main` now contains the memory service, running in shadow mode by default (the
+> `feature/memory-service` branch was merged into `main`; the pre-merge state is the tag
+> `pre-memory-service`, see [Rollback](#rollback)).
+
 `memory-service/` is an external long-term memory (SQLite + FTS5 + CPU embeddings,
 no Ollama calls; design and measurements in
 [`docs/memory-service-design.md`](docs/memory-service-design.md)). The bot integrates
@@ -594,27 +598,32 @@ any time:
 
 * **Soft (no code change)**: put `MEMORY_RECALL=off` and `MEMORY_DUAL_WRITE=0` in `.env`,
   then `docker compose up -d privateai` (and optionally `docker compose stop memory-service`).
-* **Full (back to `main`)**:
+* **Full (back to the code from before the memory service)**: `main` now contains the
+  memory service (in shadow mode), so `git checkout main` is **not** a rollback. The
+  last commit without it is tagged `pre-memory-service`:
 
   ```bash
   cd ~/PrivateAI
-  docker compose rm -sf memory-service            # stop + remove the container (compose file of this branch)
+  docker compose rm -sf memory-service            # stop + remove the container (run while still on main: it has the service in its compose file)
   sudo mv memory-data ~/backups/memory-data-$(date -u +%Y%m%dT%H%M%SZ)   # REQUIRED, see note
-  git checkout main
-  docker compose up -d --build --remove-orphans   # rebuilds the bot from main; drops any leftover orphan
+  git checkout pre-memory-service                 # detached HEAD at the pre-memory-service code
+  docker compose up -d --build --remove-orphans   # rebuilds the bot from that tag; drops any leftover orphan
   ```
 
-  **Why the `mv` is required:** `memory-data/` is owned by uid 10002 (mode 700). `main`'s
-  `.dockerignore` does not exclude it, so with the directory still present
-  `docker compose up --build` fails with `checking context: can't stat '.../memory-data'`
+  (To return to the current code later: `git checkout main`, then redo the
+  [Deploy / backfill](#deploy--backfill) steps.)
+
+  **Why the `mv` is required:** `memory-data/` is owned by uid 10002 (mode 700). The
+  `.dockerignore` of `pre-memory-service` does not exclude it, so with the directory still
+  present `docker compose up --build` fails with `checking context: can't stat '.../memory-data'`
   (verified on pai01 with a scratch context). Moving it aside also keeps the archive and
-  keeps `git status` on `main` clean.
+  keeps `git status` clean.
 
   Optional clean-up: `docker image rm privateai-memory:latest`, deleting the moved archive
   (`sudo rm -rf ~/backups/memory-data-*`; the JSONL stays the system of record), and
   restoring the previous `.env` from the backup you made before the rollout
   (`cp /home/<user>/backups/env-<timestamp>.bak .env`) or just deleting the
-  `MEMORY_TOKEN=` line (it is ignored by `main`).
+  `MEMORY_TOKEN=` line (it is ignored by `pre-memory-service`).
 
 ## Running PrivateAI
 

@@ -1,7 +1,7 @@
 # PrivateAI memory service — design, prototype and measurements
 
-Status: **design + working prototype** (branch `feature/memory-service`, code in [`memory-service/`](../memory-service/)).
-Bot-side integration (§11) is implemented behind flags on this branch and runs in **shadow mode** (dual-write + logged recall, nothing injected, tools hidden); see the top-level README "Memory service (shadow mode)".
+Status: **design + working prototype** (merged into `main`; code in [`memory-service/`](../memory-service/); the pre-merge state is tagged `pre-memory-service`).
+Bot-side integration (§11) is implemented behind flags on `main` and runs in **shadow mode** (dual-write + logged recall, nothing injected, tools hidden); see the top-level README "Memory service (shadow mode)".
 
 Legend used throughout: **[M]** = measured on pai01 during this work, **[E]** = estimate / extrapolation, **[D]** = design decision / assumption.
 
@@ -460,7 +460,7 @@ Savings vs the legacy sample prompt **[M]**: typical turn **−78% tokens / −8
 
 ## Appendix A — reproduce
 ```bash
-git clone -b feature/memory-service https://github.com/xkwizit2000/PrivateAI.git && cd PrivateAI/memory-service
+git clone https://github.com/xkwizit2000/PrivateAI.git && cd PrivateAI/memory-service
 docker build --target test -t memsvc-test .            # 41 tests
 docker build --target runtime -t privateai-memory .
 # evaluation (pointing at a directory of bot transcripts; never commit them):
