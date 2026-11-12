@@ -1,0 +1,23 @@
+[Unit]
+Description=PrivateAI read-only host status exporter (writes /var/lib/pai-status/host.json)
+Documentation=file:///home/jthornto/PrivateAI/ops/pai-status/README.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pai-status-export
+# Cheap and polite: never compete with Ollama / the bot.
+Nice=19
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+TimeoutStartSec=20
+# Read-only by construction: it only writes its own output dir and /run state dir.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+StateDirectory=pai-status
+StateDirectoryMode=0755
+RuntimeDirectory=pai-status-export
+RuntimeDirectoryPreserve=yes

@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+"""pai-status-export: write a small read-only host status snapshot for PrivateAI /status.
+
+Runs as root from pai-status-export.timer (oneshot, every 30 s). It only READS host
+facts (/proc, /sys, systemctl is-active, `docker ps/inspect --format`, the
+ollama-watchdog journal) and atomically writes ONE JSON file:
+
+    /var/lib/pai-status/host.json   (0644; contains no secrets and no chat data)
+
+It never touches Ollama, models, the watchdog's files or any other service. Every
+collector is isolated: a failing one yields null + an entry in "errors" instead of
+aborting the run. Stdlib only.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+SCHEMA = 1
+OUT_DIR = Path(os.environ.get("PAI_STATUS_DIR", "/var/lib/pai-status"))
+OUT_FILE = OUT_DIR / "host.json"
+# Counter state for CPU% (survives between runs; /run is tmpfs, so no disk writes).
+STATE_FILE = Path(os.environ.get("PAI_STATUS_STATE", "/run/pai-status-export/cpu.json"))
+DATA_PATH = os.environ.get("PAI_DATA_PATH", "/home/jthornto/PrivateAI/data")
+UNITS = os.environ.get(
+    "PAI_UNITS", "ollama.service,docker.service,ollama-watchdog.timer"
+).split(",")
+CONTAINERS = os.environ.get("PAI_CONTAINERS", "privateai,privateai-memory").split(",")
+WATCHDOG_UNIT = os.environ.get("PAI_WATCHDOG_UNIT", "ollama-watchdog")
+CMD_TIMEOUT = 6
+
+errors: dict[str, str] = {}
+
+
+def run(cmd: list[str], timeout: float = CMD_TIMEOUT) -> str:
+    """Run a command, return stdout; raises on failure/timeout."""
+    return subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout, check=True
+    ).stdout
+
+
+def guarded(name: str):
+    """Decorator: run a collector, store its error text instead of raising."""
+
+    def wrap(fn):
+        def inner(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001 - isolate collectors
+                errors[name] = f"{type(exc).__name__}: {str(exc)[:80]}"
+                return None
+
+        return inner
+
+    return wrap
+
+
+def read(path: str) -> str:
+    """Read a small text file."""
+    return Path(path).read_text().strip()
+
+
+@guarded("cpu")
+def collect_cpu() -> dict:
+    """CPU count, load averages and usage % since the previous run."""
+    def sample() -> tuple[int, int]:
+        """(idle, total) jiffies from the aggregate cpu line."""
+        fields = [int(x) for x in read("/proc/stat").splitlines()[0].split()[1:]]
+        idle = fields[3] + fields[4]  # idle + iowait
+        return idle, sum(fields[:8])  # exclude guest (already in user/nice)
+
+    now = time.time()
+    idle, total = sample()
+    prev = None
+    try:
+        prev = json.loads(STATE_FILE.read_text())
+    except Exception:  # noqa: BLE001
+        pass
+    if not prev or now - prev.get("t", 0) > 600 or total <= prev.get("total", 0):
+        time.sleep(0.25)  # first run: measure a short window instead
+        idle2, total2 = sample()
+        prev = {"idle": idle, "total": total}
+        idle, total = idle2, total2
+    usage = None
+    if total > prev["total"]:
+        usage = round(100.0 * (1 - (idle - prev["idle"]) / (total - prev["total"])), 1)
+    try:
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        STATE_FILE.write_text(json.dumps({"t": now, "idle": idle, "total": total}))
+    except OSError as exc:
+        errors["cpu_state"] = type(exc).__name__
+    load = [float(x) for x in read("/proc/loadavg").split()[:3]]
+    return {"count": os.cpu_count(), "usage_pct": usage, "load": load}
+
+
+@guarded("mem")
+def collect_mem() -> dict:
+    """Memory and swap in bytes."""
+    info = {}
+    for line in read("/proc/meminfo").splitlines():
+        key, _, rest = line.partition(":")
+        info[key] = int(rest.split()[0]) * 1024
+    return {
+        "total": info["MemTotal"],
+        "available": info["MemAvailable"],
+        "swap_total": info.get("SwapTotal", 0),
+        "swap_free": info.get("SwapFree", 0),
+    }
+
+
+def disk_entry(label: str, path: str) -> dict | None:
+    """Usage of the filesystem holding ``path`` (None if the path is missing)."""
+    if not os.path.exists(path):
+        return None
+    usage = shutil.disk_usage(path)
+    mount = path
+    while not os.path.ismount(mount):
+        mount = os.path.dirname(mount) or "/"
+    return {
+        "label": label,
+        "path": path,
+        "mount": mount,
+        "total": usage.total,
+        "used": usage.used,
+        "pct": round(100.0 * usage.used / usage.total, 1) if usage.total else None,
+    }
+
+
+@guarded("disks")
+def collect_disks() -> list:
+    """Root filesystem plus the bot's data volume."""
+    entries = [disk_entry("root", "/"), disk_entry("data", DATA_PATH)]
+    return [e for e in entries if e]
+
+
+@guarded("gpu")
+def collect_gpu() -> dict | None:
+    """GPU busy %, VRAM used/total (amdgpu sysfs), max over cards."""
+    best = None
+    for dev in sorted(Path("/sys/class/drm").glob("card[0-9]*/device")):
+        if not (dev / "gpu_busy_percent").exists():
+            continue
+        entry = {"busy_pct": int(read(str(dev / "gpu_busy_percent")))}
+        for key, fname in (("vram_used", "mem_info_vram_used"), ("vram_total", "mem_info_vram_total")):
+            try:
+                entry[key] = int(read(str(dev / fname)))
+            except (OSError, ValueError):
+                entry[key] = None
+        if best is None or entry["busy_pct"] > best["busy_pct"]:
+            best = entry
+    return best
+
+
+@guarded("temps")
+def collect_temps() -> dict:
+    """CPU (k10temp/coretemp), GPU (amdgpu) and NVMe temperatures in deg C."""
+    out: dict[str, float | None] = {"cpu_c": None, "gpu_c": None, "nvme_c": None}
+    names = {"k10temp": "cpu_c", "coretemp": "cpu_c", "amdgpu": "gpu_c", "nvme": "nvme_c"}
+    for hw in sorted(Path("/sys/class/hwmon").glob("hwmon*")):
+        key = names.get(read(str(hw / "name")))
+        if key is None or out[key] is not None:
+            continue
+        try:
+            out[key] = round(int(read(str(hw / "temp1_input"))) / 1000.0, 1)
+        except (OSError, ValueError):
+            pass
+    return out
+
+
+@guarded("units")
+def collect_units() -> dict:
+    """systemd active state of the critical units, plus failed unit names."""
+    result = subprocess.run(
+        ["systemctl", "is-active", *UNITS], capture_output=True, text=True, timeout=CMD_TIMEOUT
+    )  # exit status is non-zero when any unit is inactive: that is data, not an error
+    states = result.stdout.split()
+    units = dict(zip(UNITS, states + ["unknown"] * (len(UNITS) - len(states))))
+    failed = run(["systemctl", "--failed", "--no-legend", "--plain"]).splitlines()
+    names = [line.split()[0] for line in failed if line.strip()]
+    return {"states": units, "failed": names[:8], "failed_count": len(names)}
+
+
+_CONTAINER_FMT = (
+    "{{.Name}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}"
+    "|{{.State.StartedAt}}|{{.RestartCount}}|{{.State.OOMKilled}}"
+)
+
+
+@guarded("containers")
+def collect_containers() -> list:
+    """State/health of the named containers (only these fields; never the env)."""
+    out = []
+    for name in CONTAINERS:
+        try:
+            line = run(["docker", "inspect", "--format", _CONTAINER_FMT, name]).strip()
+        except subprocess.CalledProcessError:
+            out.append({"name": name, "state": "missing", "health": "none"})
+            continue
+        n, state, health, started, restarts, oom = line.split("|")
+        out.append(
+            {
+                "name": n.lstrip("/"),
+                "state": state,
+                "health": health,
+                "started_at": started,
+                "restarts": int(restarts),
+                "oom_killed": oom == "true",
+            }
+        )
+    return out
+
+
+_EVENT_RE = re.compile(
+    r"ollama-watchdog: (HUNG confirmed|restarting ollama|RECOVERED|COOLDOWN|WARN|ERROR|SUSPECT)"
+)
+
+
+@guarded("watchdog")
+def collect_watchdog() -> dict:
+    """Ollama watchdog activity from its journal (read only)."""
+    base = ["journalctl", "-u", WATCHDOG_UNIT, "--no-pager", "-o", "short-iso"]
+    day = run(base + ["--since", "-24h", "-g", r"ollama-watchdog: (HUNG|restarting|RECOVERED|COOLDOWN|WARN|ERROR|SUSPECT)"], 10).splitlines()
+    events = []
+    for line in day:
+        match = _EVENT_RE.search(line)
+        if match:
+            ts = line.split(" ", 1)[0]
+            text = line.split("ollama-watchdog: ", 1)[1][:110]
+            events.append({"ts": ts, "kind": match.group(1), "text": text})
+    last_lines = run(base + ["-n", "30"]).splitlines()
+    last = None
+    for line in reversed(last_lines):
+        if "ollama-watchdog: " in line and "ollama-watchdog: ps" not in line:
+            last = {"ts": line.split(" ", 1)[0], "text": line.split("ollama-watchdog: ", 1)[1][:140]}
+            break
+    restarts = [e for e in events if e["kind"] == "restarting ollama"]
+    return {
+        "restarts_24h": len(restarts),
+        "hung_24h": sum(1 for e in events if e["kind"] == "HUNG confirmed"),
+        "cooldown_24h": sum(1 for e in events if e["kind"] == "COOLDOWN"),
+        "last_restart_at": restarts[-1]["ts"] if restarts else None,
+        "last_line": last,
+        "events": events[-8:],
+    }
+
+
+@guarded("uptime")
+def collect_uptime() -> float:
+    """Host uptime in seconds."""
+    return float(read("/proc/uptime").split()[0])
+
+
+def main() -> int:
+    """Collect everything and atomically replace host.json."""
+    started = time.time()
+    now = datetime.now(timezone.utc)
+    data = {
+        "schema": SCHEMA,
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_epoch": round(started, 3),
+        "hostname": os.uname().nodename,
+        "uptime_s": collect_uptime(),
+        "reboot_required": os.path.exists("/var/run/reboot-required"),
+        "cpu": collect_cpu(),
+        "mem": collect_mem(),
+        "disks": collect_disks(),
+        "gpu": collect_gpu(),
+        "temps": collect_temps(),
+        "units": collect_units(),
+        "containers": collect_containers(),
+        "watchdog": collect_watchdog(),
+    }
+    data["errors"] = errors
+    data["exporter"] = {"duration_ms": round((time.time() - started) * 1000)}
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(OUT_DIR, 0o755)
+    tmp = OUT_DIR / ".host.json.tmp"
+    with open(tmp, "w") as handle:
+        json.dump(data, handle, separators=(",", ":"))
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, OUT_FILE)  # atomic: readers see the old or the new file, never half
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
