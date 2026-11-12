@@ -219,7 +219,7 @@ def collect_containers() -> list:
 
 
 _EVENT_RE = re.compile(
-    r"ollama-watchdog: (HUNG confirmed|restarting ollama|RECOVERED|COOLDOWN|WARN|ERROR|SUSPECT)"
+    r"ollama-watchdog: (HUNG confirmed|restarting ollama|RECOVERED|COOLDOWN|WARN|ERROR)"
 )
 
 
@@ -227,7 +227,7 @@ _EVENT_RE = re.compile(
 def collect_watchdog() -> dict:
     """Ollama watchdog activity from its journal (read only)."""
     base = ["journalctl", "-u", WATCHDOG_UNIT, "--no-pager", "-o", "short-iso"]
-    day = run(base + ["--since", "-24h", "-g", r"ollama-watchdog: (HUNG|restarting|RECOVERED|COOLDOWN|WARN|ERROR|SUSPECT)"], 10).splitlines()
+    day = run(base + ["--since", "-24h", "-g", r"ollama-watchdog: (HUNG|restarting|RECOVERED|COOLDOWN|WARN|ERROR)"], 10).splitlines()
     events = []
     for line in day:
         match = _EVENT_RE.search(line)
