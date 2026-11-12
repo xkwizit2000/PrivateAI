@@ -10,7 +10,7 @@ The bot currently supports:
 - Configurable chat backend (`CHAT_BACKEND=telegram` or `session`)
 - Telegram user-ID or Session ID authorization
 - Local or network-accessible Ollama inference
-- Ollama tool calling through local stdio MCP servers
+- Ollama tool calling through local stdio MCP servers (and MCP-over-SSE servers such as the memory service)
 - Read-only MCP mode by default
 - Durable per-chat transcripts and rolling summaries
 - Safe response chunking and sanitized error messages
@@ -28,8 +28,9 @@ Telegram Bot API          Session.js adapter (Bun)
 PrivateAI bot / agent host
   ├── src/bot.py / bridge.py   front-end adapters
   ├── src/agent.py             Ollama reasoning and tool-call loop
-  ├── src/mcp_client.py        MCP server lifecycle and tool routing
-  └── src/memory.py            transcript and rolling-summary storage
+  ├── src/mcp_client.py        MCP server lifecycle (stdio + SSE) and tool routing
+  ├── src/memory.py            transcript and rolling-summary storage
+  └── src/memory_service_client.py  dual-write / recall client for memory-service/
         │                            │
         │ HTTP                       │ stdio
         ▼                            ▼
@@ -187,6 +188,15 @@ Available variables:
 | `MEMORY_RECENT_TURNS` | `4` | Recent turns inserted into each model prompt |
 | `MEMORY_SUMMARIZE_EVERY` | `6` | Completed turns between summary updates |
 | `MEMORY_MAX_CONTEXT_CHARS` | `12000` | Soft memory-text budget per prompt |
+| `MEMORY_BACKEND` | `legacy` | `legacy` = rolling summary + RAG (today); `service` = core-only context from the memory service (fact profile + last N turns, no summary/RAG) |
+| `MEMORY_SERVICE_URL` | empty (compose: `http://memory-service:8765`) | Memory service base URL; empty disables the whole integration |
+| `MEMORY_TOKEN` | empty | Shared bearer token with the memory-service container (also expanded for `${MEMORY_TOKEN}` in `mcp.json` headers) |
+| `MEMORY_RECALL` | `shadow` | `off`; `shadow` = per-turn recall query in the background, metadata-only log line; `on` = inject the gated recall block as a system message (≤700 chars) |
+| `MEMORY_TOOLS` | `off` | `on` = expose the memory MCP tools (server named `memory` in `mcp.json`) to the model; hidden when `off` |
+| `MEMORY_DUAL_WRITE` | `1` | Send a copy of every completed turn to the service (always on with `MEMORY_BACKEND=service`) |
+| `MEMORY_RECALL_TIMEOUT` / `MEMORY_APPEND_TIMEOUT` / `MEMORY_TOOL_TIMEOUT` | `2.5` / `3` / `5` | Seconds before a recall, append or memory tool call gives up |
+| `MEMORY_BREAKER_FAILURES` / `MEMORY_BREAKER_COOLDOWN` | `3` / `30` | Circuit breaker: after this many consecutive failures, stop calling the service for the cooldown (doubles up to `MEMORY_BREAKER_MAX_COOLDOWN`=300 s) |
+| `MEMORY_RECALL_MAX_CHARS` | `700` | Hard cap of the recall block injected in `on` mode |
 | `RAG_ENABLED` | `1` | Retrieve older relevant turns via embeddings |
 | `RAG_DIR` | `<project>/data/rag` | Per-session SQLite vector store directory |
 | `RAG_EMBED_MODEL` | `nomic-embed-text` | Embedding model on `OLLAMA_HOST` |
@@ -335,8 +345,11 @@ Security notes:
 - Do not add unrestricted shell tools without command allowlists and explicit
   user approval.
 - An empty or missing `mcp.json` leaves the bot in chat-only mode.
-- The current MCP client supports local stdio servers. Remote HTTP MCP
-  transport is not implemented yet.
+- The MCP client supports local stdio servers and MCP-over-SSE servers
+  (`{"url": "...", "headers": {...}}`, header values may use `${ENV_VAR}`). SSE
+  calls have a short timeout and one reconnect, return errors as text, and an
+  unreachable SSE server only logs a warning at startup. Streamable-HTTP is not
+  available in `mcp==1.3.0`.
 
 ## Durable memory
 
@@ -429,6 +442,102 @@ already ran are never re-executed. If the retry fails too, the bot replies
 `System Error: Ollama was unavailable or restarted while answering. Please
 resend your message in a minute.` (the failed turn is not stored in memory).
 
+## Memory service (shadow mode)
+
+`memory-service/` is an external long-term memory (SQLite + FTS5 + CPU embeddings,
+no Ollama calls; design and measurements in
+[`docs/memory-service-design.md`](docs/memory-service-design.md)). The bot integrates
+with it in stages, all behind flags; with the defaults below **replies, prompts and
+tools are exactly what they were without it**:
+
+| Setting | Shadow rollout | Effect |
+| --- | --- | --- |
+| `MEMORY_BACKEND` | `legacy` | rolling summary + RAG unchanged |
+| `MEMORY_DUAL_WRITE` | `1` | every completed turn is also POSTed to the service (fire-and-forget; failed/retried turns are saved nowhere, same as the JSONL) |
+| `MEMORY_RECALL` | `shadow` | one `/v1/recall` per turn in the background (never awaited before the model call); result is only logged |
+| `MEMORY_TOOLS` | `off` | memory tools are not visible to the model |
+
+A down or slow service costs nothing: calls are bounded by 2.5–3 s timeouts, run
+outside the reply path, and a circuit breaker stops calling it after 3 failures
+(retrying after 30 s, doubling to 5 min). The bot does not depend on the service
+container to start. The service gets no published port; it shares the compose network
+and the `MEMORY_TOKEN` secret with the bot.
+
+### Reading the shadow stats
+
+Every turn logs one metadata-only line (never message text):
+
+```text
+memory shadow: gate=fired|skipped hits=N top=0.xx chars=N ms=N why=cue|strong|none|empty
+memory dual-write: turns_new=2 chunks_new=2 ms=9
+```
+
+```bash
+docker logs privateai 2>&1 | grep 'memory shadow' | tail            # recent decisions
+docker logs privateai 2>&1 | grep -c 'memory shadow: gate=fired'     # how often it would inject
+docker logs privateai 2>&1 | grep -E 'memory service (call failed|unavailable|recovered)'
+docker exec privateai-memory python -m memory_service stats           # archive size
+```
+
+In chat, `/memory` shows reachability, archive counts, breaker state and the
+recall/dual-write counters since the last bot start, and `/recall <query>` runs one
+explicit search of the archive (capped text).
+
+### Deploy / backfill
+
+```bash
+echo "MEMORY_TOKEN=$(openssl rand -hex 24)" >> .env      # never print or commit it
+sudo install -d -o 10002 -g 10002 -m 700 memory-data       # DB directory (uid of the image)
+docker compose build
+docker compose up -d memory-service                         # wait until `docker ps` says healthy
+# backfill the archive from the existing transcripts (read-only mount, over HTTP so the
+# running service indexes them); output is counts only:
+docker run --rm --network privateai_default --user 10001 --entrypoint "" \
+  -v "$PWD/data/sessions:/in:ro" -v "$PWD/memory-service/integration:/it:ro" \
+  -e MEMORY_TOKEN -e MEM_URL=http://memory-service:8765 \
+  privateai:latest python /it/backfill_http.py /in
+docker compose up -d                                         # recreates the bot (brief restart)
+```
+
+(`MEMORY_TOKEN` must be exported in the shell for the `docker run` line, e.g.
+`set -a; . ./.env; set +a`, or read from `.env` without echoing it.)
+
+### Enabling later
+
+* **Inject recalled snippets** (`on`): `MEMORY_RECALL=on` (keep `MEMORY_BACKEND=legacy`
+  to add the block next to the legacy RAG, or `MEMORY_BACKEND=service` to replace
+  summary + RAG by the core-only context). Restart: `docker compose up -d privateai`.
+* **Memory tools for the model**: add the `memory` server from `mcp.json.example` to
+  `mcp.json` (URL `http://memory-service:8765/sse`, header
+  `Authorization: Bearer ${MEMORY_TOKEN}`) and set `MEMORY_TOOLS=on`. They are then
+  offered only for messages with memory cues ("remember", "earlier", "last time",
+  "we discussed", "yesterday", …) and for a follow-up window, independently of the
+  file tools; `/tools off` still disables all tools for a chat.
+
+Put these in `.env` (compose passes them through with defaults).
+
+### Rollback
+
+Nothing in the legacy files (`data/sessions/*.jsonl`, `*.summary.json`, `data/rag`) is
+ever modified by the service, and the bot keeps writing its JSONL, so rollback is safe at
+any time:
+
+* **Soft (no code change)**: put `MEMORY_RECALL=off` and `MEMORY_DUAL_WRITE=0` in `.env`,
+  then `docker compose up -d privateai` (and optionally `docker compose stop memory-service`).
+* **Full (back to `main`)**:
+
+  ```bash
+  cd ~/PrivateAI
+  git checkout main
+  docker compose up -d --build --remove-orphans   # rebuilds the bot; removes the privateai-memory container
+  ```
+
+  Optional clean-up: `docker image rm privateai-memory:latest`,
+  `sudo rm -rf memory-data` (the archive; the JSONL stays the system of record), and
+  restore the previous `.env` from the backup you made before the rollout
+  (`cp /home/<user>/backups/env-<timestamp>.bak .env`) or just delete the
+  `MEMORY_TOKEN=` line (it is ignored by `main`).
+
 ## Running PrivateAI
 
 Activate the environment and start the selected front end:
@@ -516,9 +625,11 @@ source .venv/bin/activate
 python -m unittest discover -s tests -v
 ```
 
-The tests currently cover transcript persistence, recent-turn loading,
-summary thresholds, summary loading, session-path validation, and conversation
-RAG index/retrieve behavior.
+The tests cover transcript persistence, recent-turn loading, summary thresholds,
+session-path validation, conversation RAG, tool routing, the MCP SSE transport
+(against an in-process fake SSE server), and the memory-service client (timeouts,
+circuit breaker, dual-write, shadow/`on` recall, per-group tool routing). The memory
+service has its own suite: `docker build --target test -t memsvc-test memory-service`.
 
 ## Project layout
 
@@ -529,6 +640,7 @@ PrivateAI/
 ├── Dockerfile            container image (Python + Node for MCP)
 ├── docker-compose.yml    compose services (Telegram or Session profile)
 ├── requirements.txt
+├── memory-service/       external memory service (own Dockerfile, tests, README)
 ├── session-adapter/      Bun + Session.js DM front end
 ├── src/
 │   ├── __main__.py       `python -m src` entry (telegram|session)
@@ -539,6 +651,7 @@ PrivateAI/
 │   ├── config.py         environment configuration
 │   ├── mcp_client.py     MCP client hub
 │   ├── memory.py         durable session memory
+│   ├── memory_service_client.py  memory-service client (dual-write, shadow/on recall)
 │   ├── rag.py            conversation RAG store
 │   └── runtime.py        shared agent/MCP/memory bootstrap
 └── tests/
@@ -548,7 +661,7 @@ PrivateAI/
 
 - Telegram authorizes a single user ID; Session authorizes an allowlist of IDs.
 - Session support uses community Session.js (not an official Bot API).
-- MCP connections currently use local stdio transport only.
+- MCP connections use local stdio or MCP-over-SSE (no streamable-HTTP with `mcp==1.3.0`).
 - There is no confirmation workflow for write-capable tools.
 - RAG indexes conversation turns only, not arbitrary workspace documents.
 - There is no packaged `systemd` unit yet.

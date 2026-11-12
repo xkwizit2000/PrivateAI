@@ -29,6 +29,23 @@ services:
       # In auto mode, follow-ups keep tools on this long (seconds) after a file turn.
       TOOL_ROUTING_FOLLOWUP_SECONDS: ${TOOL_ROUTING_FOLLOWUP_SECONDS:-600}
       MCP_CONFIG_PATH: /app/mcp.json
+      # --- External memory service (shadow mode by default; see README "Memory service") ---
+      # legacy = rolling summary + RAG (today's behaviour); service = core-only context.
+      MEMORY_BACKEND: ${MEMORY_BACKEND:-legacy}
+      MEMORY_SERVICE_URL: ${MEMORY_SERVICE_URL:-http://memory-service:8765}
+      # off | shadow (query in the background, log metadata only) | on (inject the block).
+      MEMORY_RECALL: ${MEMORY_RECALL:-shadow}
+      # off | on: expose the memory MCP tools (also needs a "memory" entry in mcp.json).
+      MEMORY_TOOLS: ${MEMORY_TOOLS:-off}
+      # 1 = send a copy of every completed turn to the service.
+      MEMORY_DUAL_WRITE: ${MEMORY_DUAL_WRITE:-1}
+      MEMORY_RECALL_TIMEOUT: ${MEMORY_RECALL_TIMEOUT:-2.5}
+      MEMORY_APPEND_TIMEOUT: ${MEMORY_APPEND_TIMEOUT:-3}
+      MEMORY_TOOL_TIMEOUT: ${MEMORY_TOOL_TIMEOUT:-5}
+      # Shared secret with the memory-service container (set in .env; empty = no auth).
+      MEMORY_TOKEN: ${MEMORY_TOKEN:-}
+    # No depends_on on purpose: the bot must start (and keep working) even if the
+    # memory service is down.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -40,6 +57,41 @@ services:
     ports:
       # Only needed for CHAT_BACKEND=session (Session.js → Python bridge).
       - "${BRIDGE_PORT:-8787}:8787"
+
+  # External long-term memory (SQLite + FTS5 + in-process CPU embeddings). Internal network
+  # only (no published port). In this rollout it never calls Ollama.
+  memory-service:
+    build: ./memory-service
+    image: privateai-memory:latest
+    container_name: privateai-memory
+    restart: unless-stopped
+    environment:
+      DB_PATH: /data/memory.db
+      # Bearer token the bot sends (the same MEMORY_TOKEN from .env).
+      AUTH_TOKEN: ${MEMORY_TOKEN:-}
+      EMBED_THREADS: "2"
+      OMP_NUM_THREADS: "2"
+      IDLE_SECONDS: "300"
+    volumes:
+      # SQLite DB (WAL). Directory must be writable by uid 10002 (the image's user);
+      # create it once with: sudo install -d -o 10002 -g 10002 -m 700 memory-data
+      - ./memory-data:/data
+    mem_limit: 768m
+    cpus: 2
+    pids_limit: 128
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
 
   session-adapter:
     profiles: ["session"]

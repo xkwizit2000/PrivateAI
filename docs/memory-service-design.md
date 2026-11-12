@@ -1,7 +1,7 @@
 # PrivateAI memory service — design, prototype and measurements
 
 Status: **design + working prototype** (branch `feature/memory-service`, code in [`memory-service/`](../memory-service/)).
-Nothing here is wired into the live bot; `src/` is untouched.
+Bot-side integration (§11) is implemented behind flags on this branch and runs in **shadow mode** (dual-write + logged recall, nothing injected, tools hidden); see the top-level README "Memory service (shadow mode)".
 
 Legend used throughout: **[M]** = measured on pai01 during this work, **[E]** = estimate / extrapolation, **[D]** = design decision / assumption.
 
@@ -379,7 +379,9 @@ Savings vs the legacy sample prompt **[M]**: typical turn **−78% tokens / −8
 
 4/4 on explicit recall with sensible, terse queries and answers grounded in the returned text; correct restraint on the control; **a miss on implicit recall** — exactly the risk the gate + fact profile are meant to cover (§14).
 
-## 11. Bot-side integration plan (not implemented; `src/` untouched)
+## 11. Bot-side integration plan (implemented as shadow mode; deviations below)
+
+**As implemented** (names differ slightly from the plan table): `MEMORY_BACKEND=legacy|service`, `MEMORY_SERVICE_URL`, `MEMORY_TOKEN` (one shared secret; the service container receives it as `AUTH_TOKEN`), `MEMORY_RECALL=off|shadow|on`, `MEMORY_TOOLS=off|on` (the cue-gating by group replaces `cue|always|never`; `/tools on` = always), `MEMORY_DUAL_WRITE`, and separate recall/append/tool timeouts (2.5/3/5 s) plus a circuit breaker. The SSE transport lives in `McpHub` itself (one owner task per connection), `ServiceMemory` is the HTTP client in `src/memory_service_client.py` and `CoreMemoryStore` is the service-backend context. The service joins the bot's default compose network (no published port) instead of a separate internal network, and does not call Ollama. Plan table kept below for reference.
 
 | File | Change |
 |---|---|

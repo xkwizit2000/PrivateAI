@@ -2,7 +2,7 @@
 
 External long-term memory for the PrivateAI bot: immutable SQLite archive of every turn, hybrid
 (FTS5 keyword + in-process CPU embeddings) retrieval, curated facts, hierarchical dated summaries,
-an MCP server with tiny tool schemas, a thin HTTP API and a CLI. **Prototype: not wired into the bot.**
+an MCP server with tiny tool schemas, a thin HTTP API and a CLI. The bot talks to it in **shadow mode** (dual-write + logged recall; see the top-level README).
 Design, measurements and the bot-side integration plan: [`docs/memory-service-design.md`](../docs/memory-service-design.md).
 
 * Python 3.12 (Docker), `mcp==1.3.0` (same as the bot's client), `fastembed` (ONNX Runtime, no torch),

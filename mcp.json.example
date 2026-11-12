@@ -7,6 +7,12 @@
         "@modelcontextprotocol/server-filesystem",
         "/ABS/PATH/TO/ALLOWED/DIRECTORY"
       ]
+    },
+    "memory": {
+      "url": "http://memory-service:8765/sse",
+      "headers": {
+        "Authorization": "Bearer ${MEMORY_TOKEN}"
+      }
     }
   }
 }

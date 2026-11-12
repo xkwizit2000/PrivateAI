@@ -3,6 +3,7 @@
 mcp.json
 *.local
 data/
+memory-data/
 
 # Session.js adapter
 session-adapter/node_modules/

@@ -5,6 +5,8 @@ env/
 build/
 dist/
 data/
+memory-data/
+memory-service/
 __pycache__/
 **/__pycache__/
 *.py[cod]
