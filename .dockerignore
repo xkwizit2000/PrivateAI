@@ -1,4 +1,8 @@
 .git
+# Only the metadata scripts/gen_version.py needs to stamp the image version.
+!.git/HEAD
+!.git/packed-refs
+!.git/refs
 .gitignore
 .venv
 env/

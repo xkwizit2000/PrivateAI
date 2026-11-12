@@ -1,6 +1,12 @@
 services:
   privateai:
-    build: .
+    build:
+      context: .
+      args:
+        # Optional overrides; by default the Dockerfile reads HEAD/refs from .git, so a
+        # plain `docker compose build` stamps the commit shown by /status.
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_BRANCH: ${GIT_BRANCH:-}
     image: privateai:latest
     container_name: privateai
     restart: unless-stopped
@@ -44,6 +50,27 @@ services:
       MEMORY_TOOL_TIMEOUT: ${MEMORY_TOOL_TIMEOUT:-5}
       # Shared secret with the memory-service container (set in .env; empty = no auth).
       MEMORY_TOKEN: ${MEMORY_TOKEN:-}
+      # --- /status report: host exporter file + verdict thresholds (see README "/status") ---
+      STATUS_HOST_FILE: /host-status/host.json
+      STATUS_MARKERS: ${STATUS_MARKERS:-emoji}
+      STATUS_HOST_STALE_SECONDS: ${STATUS_HOST_STALE_SECONDS:-120}
+      STATUS_LOAD_WARN_RATIO: ${STATUS_LOAD_WARN_RATIO:-1.0}
+      STATUS_CPU_WARN_PERCENT: ${STATUS_CPU_WARN_PERCENT:-90}
+      STATUS_MEM_AVAILABLE_WARN_PERCENT: ${STATUS_MEM_AVAILABLE_WARN_PERCENT:-10}
+      STATUS_SWAP_WARN_PERCENT: ${STATUS_SWAP_WARN_PERCENT:-50}
+      STATUS_DISK_WARN_PERCENT: ${STATUS_DISK_WARN_PERCENT:-85}
+      STATUS_DISK_FAIL_PERCENT: ${STATUS_DISK_FAIL_PERCENT:-95}
+      STATUS_VRAM_WARN_PERCENT: ${STATUS_VRAM_WARN_PERCENT:-95}
+      STATUS_CPU_TEMP_WARN_C: ${STATUS_CPU_TEMP_WARN_C:-90}
+      STATUS_GPU_TEMP_WARN_C: ${STATUS_GPU_TEMP_WARN_C:-90}
+      STATUS_WATCHDOG_RESTARTS_WARN: ${STATUS_WATCHDOG_RESTARTS_WARN:-3}
+      STATUS_CONTAINER_MEM_WARN_PERCENT: ${STATUS_CONTAINER_MEM_WARN_PERCENT:-90}
+      STATUS_LOOP_LAG_WARN_MS: ${STATUS_LOOP_LAG_WARN_MS:-250}
+      STATUS_MODEL_ERROR_WINDOW_SECONDS: ${STATUS_MODEL_ERROR_WINDOW_SECONDS:-900}
+      STATUS_MEMORY_BACKLOG_WARN: ${STATUS_MEMORY_BACKLOG_WARN:-24}
+      STATUS_SUMMARY_STALE_DAYS: ${STATUS_SUMMARY_STALE_DAYS:-7}
+      STATUS_DUAL_WRITE_LAG_SECONDS: ${STATUS_DUAL_WRITE_LAG_SECONDS:-300}
+      STATUS_DUAL_WRITE_MISSING_WARN: ${STATUS_DUAL_WRITE_MISSING_WARN:-10}
     # No depends_on on purpose: the bot must start (and keep working) even if the
     # memory service is down.
     extra_hosts:
@@ -54,6 +81,9 @@ services:
       # Durable conversation memory / RAG / settings.
       - ./data:/data
       - ./workingdir:/workingdir
+      # Read-only host metrics written by the pai-status-export systemd timer
+      # (ops/pai-status). Missing/stale file = /status shows "n/a" for the host section.
+      - /var/lib/pai-status:/host-status:ro
     ports:
       # Only needed for CHAT_BACKEND=session (Session.js → Python bridge).
       - "${BRIDGE_PORT:-8787}:8787"

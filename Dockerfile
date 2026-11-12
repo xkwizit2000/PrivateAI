@@ -1,3 +1,15 @@
+# --- Stage 1: record the exact commit/branch for the /status report ----------------------
+# Reads only HEAD/refs/packed-refs (see .dockerignore exceptions); requirements.txt in the
+# COPY keeps it valid when there is no .git at all (then the version is "unknown").
+# Optional build args GIT_COMMIT / GIT_BRANCH override what is read from .git.
+FROM python:3.12-slim AS version
+ARG GIT_COMMIT=""
+ARG GIT_BRANCH=""
+COPY requirements.txt .git* /gitmeta/
+COPY scripts/gen_version.py /gen_version.py
+RUN python /gen_version.py /gitmeta /VERSION
+
+# --- Stage 2: the bot image --------------------------------------------------------------
 FROM python:3.12-slim
 
 # Node.js provides `npx` for the example filesystem MCP server.
@@ -19,6 +31,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src ./src
+COPY --from=version /VERSION /app/VERSION
 
 # Run as an unprivileged user and persist memory to a mounted volume.
 RUN useradd --create-home --uid 10001 privateai \
