@@ -528,14 +528,22 @@ any time:
 
   ```bash
   cd ~/PrivateAI
+  docker compose rm -sf memory-service            # stop + remove the container (compose file of this branch)
+  sudo mv memory-data ~/backups/memory-data-$(date -u +%Y%m%dT%H%M%SZ)   # REQUIRED, see note
   git checkout main
-  docker compose up -d --build --remove-orphans   # rebuilds the bot; removes the privateai-memory container
+  docker compose up -d --build --remove-orphans   # rebuilds the bot from main; drops any leftover orphan
   ```
 
-  Optional clean-up: `docker image rm privateai-memory:latest`,
-  `sudo rm -rf memory-data` (the archive; the JSONL stays the system of record), and
-  restore the previous `.env` from the backup you made before the rollout
-  (`cp /home/<user>/backups/env-<timestamp>.bak .env`) or just delete the
+  **Why the `mv` is required:** `memory-data/` is owned by uid 10002 (mode 700). `main`'s
+  `.dockerignore` does not exclude it, so with the directory still present
+  `docker compose up --build` fails with `checking context: can't stat '.../memory-data'`
+  (verified on pai01 with a scratch context). Moving it aside also keeps the archive and
+  keeps `git status` on `main` clean.
+
+  Optional clean-up: `docker image rm privateai-memory:latest`, deleting the moved archive
+  (`sudo rm -rf ~/backups/memory-data-*`; the JSONL stays the system of record), and
+  restoring the previous `.env` from the backup you made before the rollout
+  (`cp /home/<user>/backups/env-<timestamp>.bak .env`) or just deleting the
   `MEMORY_TOKEN=` line (it is ignored by `main`).
 
 ## Running PrivateAI
