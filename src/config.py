@@ -31,6 +31,10 @@ _num_ctx_raw = os.getenv("OLLAMA_NUM_CTX", "").strip()
 OLLAMA_NUM_CTX = int(_num_ctx_raw) if _num_ctx_raw else None
 # When generation stops with done_reason=length, continue this many times.
 OLLAMA_MAX_CONTINUATIONS = int(os.getenv("OLLAMA_MAX_CONTINUATIONS", "2"))
+# After a connection-type failure, wait up to this long for Ollama to come back
+# (polling /api/version) and retry the chat call once.
+OLLAMA_RETRY_WAIT_SECONDS = float(os.getenv("OLLAMA_RETRY_WAIT_SECONDS", "90"))
+OLLAMA_RETRY_POLL_SECONDS = float(os.getenv("OLLAMA_RETRY_POLL_SECONDS", "2"))
 MCP_CONFIG_PATH = Path(os.getenv("MCP_CONFIG_PATH", PROJECT_ROOT / "mcp.json"))
 MAX_TOOL_ITERATIONS = int(os.getenv("MAX_TOOL_ITERATIONS", "8"))
 # When true, expose only inspect/read MCP tools (recommended default).
@@ -45,6 +49,12 @@ MEMORY_MAX_CONTEXT_CHARS = int(os.getenv("MEMORY_MAX_CONTEXT_CHARS", "12000"))
 RAG_ENABLED = os.getenv("RAG_ENABLED", "1").lower() not in {"0", "false", "no"}
 RAG_DIR = Path(os.getenv("RAG_DIR", PROJECT_ROOT / "data" / "rag"))
 RAG_EMBED_MODEL = os.getenv("RAG_EMBED_MODEL", "nomic-embed-text")
+# GPU layers for the embedding model. 0 = CPU only (default, keeps the iGPU free
+# for the chat model); -1 or empty = let Ollama decide; N>0 = offload N layers.
+_embed_num_gpu_raw = os.getenv("RAG_EMBED_NUM_GPU", "0").strip()
+RAG_EMBED_NUM_GPU: int | None = (
+    int(_embed_num_gpu_raw) if _embed_num_gpu_raw not in {"", "-1"} else None
+)
 RAG_TOP_K = int(os.getenv("RAG_TOP_K", "4"))
 RAG_MAX_CONTEXT_CHARS = int(os.getenv("RAG_MAX_CONTEXT_CHARS", "4000"))
 RAG_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.25"))

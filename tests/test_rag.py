@@ -1,6 +1,8 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from src.rag import RagStore, _cosine
 
@@ -108,3 +110,39 @@ class RagStoreTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EmbedOptionsTests(unittest.IsolatedAsyncioTestCase):
+    """The embedding call must pass num_gpu so the model stays on CPU."""
+
+    def _fake_client(self, calls: list[dict]):
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def embed(self, **kwargs):
+                calls.append(kwargs)
+                return SimpleNamespace(embeddings=[[0.1, 0.2]] * len(kwargs["input"]))
+
+        return FakeClient
+
+    async def test_default_embeds_on_cpu(self):
+        calls: list[dict] = []
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "src.rag.AsyncClient", self._fake_client(calls)
+        ):
+            store = RagStore(Path(tmp))
+            vectors = await store.embed(["hello", "world"])
+        self.assertEqual(vectors, [[0.1, 0.2], [0.1, 0.2]])
+        self.assertEqual(calls[0]["options"], {"num_gpu": 0})
+        self.assertEqual(calls[0]["input"], ["hello", "world"])
+
+    async def test_num_gpu_is_configurable(self):
+        calls: list[dict] = []
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "src.rag.AsyncClient", self._fake_client(calls)
+        ):
+            await RagStore(Path(tmp), embed_num_gpu=7).embed(["x"])
+            await RagStore(Path(tmp), embed_num_gpu=None).embed(["x"])
+        self.assertEqual(calls[0]["options"], {"num_gpu": 7})
+        self.assertIsNone(calls[1]["options"])

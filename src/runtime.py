@@ -19,6 +19,7 @@ from .config import (
     OLLAMA_TIMEOUT_SECONDS,
     RAG_DIR,
     RAG_EMBED_MODEL,
+    RAG_EMBED_NUM_GPU,
     RAG_ENABLED,
     RAG_MAX_CONTEXT_CHARS,
     RAG_MIN_SCORE,
@@ -65,6 +66,7 @@ class AppRuntime:
             rag = RagStore(
                 RAG_DIR,
                 embed_model=RAG_EMBED_MODEL,
+                embed_num_gpu=RAG_EMBED_NUM_GPU,
                 top_k=RAG_TOP_K,
                 max_context_chars=RAG_MAX_CONTEXT_CHARS,
                 min_score=RAG_MIN_SCORE,
@@ -72,9 +74,10 @@ class AppRuntime:
                 recent_turns=MEMORY_RECENT_TURNS,
             )
             logger.info(
-                "Conversation RAG enabled at %s (embed model=%s)",
+                "Conversation RAG enabled at %s (embed model=%s, num_gpu=%s)",
                 RAG_DIR,
                 RAG_EMBED_MODEL,
+                RAG_EMBED_NUM_GPU,
             )
             total = 0
             for session_id in memory.list_session_ids():

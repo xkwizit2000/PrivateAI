@@ -20,6 +20,7 @@ from .config import (
     MEMORY_RECENT_TURNS,
     OLLAMA_HOST,
     RAG_EMBED_MODEL,
+    RAG_EMBED_NUM_GPU,
     RAG_MAX_CONTEXT_CHARS,
     RAG_MIN_SCORE,
     RAG_TOP_K,
@@ -77,6 +78,7 @@ class RagStore:
         data_dir: Path,
         *,
         embed_model: str = RAG_EMBED_MODEL,
+        embed_num_gpu: int | None = RAG_EMBED_NUM_GPU,
         top_k: int = RAG_TOP_K,
         max_context_chars: int = RAG_MAX_CONTEXT_CHARS,
         min_score: float = RAG_MIN_SCORE,
@@ -87,6 +89,7 @@ class RagStore:
         """Create a per-session RAG store with embedding and retrieval settings."""
         self.data_dir = data_dir
         self.embed_model = embed_model
+        self.embed_num_gpu = embed_num_gpu
         self.top_k = top_k
         self.max_context_chars = max_context_chars
         self.min_score = min_score
@@ -127,6 +130,12 @@ class RagStore:
         os.chmod(path, 0o600)
         return conn
 
+    def _embed_options(self) -> dict[str, Any] | None:
+        """Ollama options for embed calls (num_gpu=0 keeps the model on CPU)."""
+        if self.embed_num_gpu is None:
+            return None
+        return {"num_gpu": self.embed_num_gpu}
+
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
         """Embed texts via the injected embed_fn or Ollama's embedding API."""
         if not texts:
@@ -135,7 +144,11 @@ class RagStore:
             return await self._embed_fn(texts)
 
         client = AsyncClient(host=self.ollama_host)
-        response = await client.embed(model=self.embed_model, input=list(texts))
+        response = await client.embed(
+            model=self.embed_model,
+            input=list(texts),
+            options=self._embed_options(),
+        )
         embeddings = getattr(response, "embeddings", None) or []
         return [list(vector) for vector in embeddings]
 
