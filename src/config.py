@@ -39,6 +39,15 @@ MCP_CONFIG_PATH = Path(os.getenv("MCP_CONFIG_PATH", PROJECT_ROOT / "mcp.json"))
 MAX_TOOL_ITERATIONS = int(os.getenv("MAX_TOOL_ITERATIONS", "8"))
 # When true, expose only inspect/read MCP tools (recommended default).
 MCP_READONLY = os.getenv("MCP_READONLY", "1").lower() not in {"0", "false", "no"}
+# Comma-separated MCP tools to expose to the model. Names may be the registered
+# name (filesystem_read_text_file) or the server-local name (read_text_file),
+# case-insensitive. "*" or "all" exposes everything; empty = built-in default
+# list (see src/mcp_client.py DEFAULT_TOOL_ALLOWLIST). Applied on top of MCP_READONLY.
+MCP_TOOL_ALLOWLIST = os.getenv("MCP_TOOL_ALLOWLIST", "").strip()
+# Cap (characters) for each tool's top-level description sent to Ollama (0 = unlimited).
+MCP_TOOL_DESC_MAX_CHARS = int(os.getenv("MCP_TOOL_DESC_MAX_CHARS", "200") or "200")
+# Cap (characters) for each parameter description inside tool schemas (0 = unlimited).
+MCP_PARAM_DESC_MAX_CHARS = int(os.getenv("MCP_PARAM_DESC_MAX_CHARS", "80") or "80")
 MEMORY_DIR = Path(os.getenv("MEMORY_DIR", PROJECT_ROOT / "data" / "sessions"))
 SESSION_SETTINGS_PATH = Path(
     os.getenv("SESSION_SETTINGS_PATH", PROJECT_ROOT / "data" / "session_settings.json")

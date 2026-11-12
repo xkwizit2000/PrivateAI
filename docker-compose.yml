@@ -18,6 +18,11 @@ services:
       # 0 = run the embedding model on CPU only (keeps the iGPU for the chat model).
       RAG_EMBED_NUM_GPU: ${RAG_EMBED_NUM_GPU:-0}
       SESSION_SETTINGS_PATH: /data/session_settings.json
+      # Which MCP tools the model sees (empty = built-in default list; "all" = every tool).
+      MCP_TOOL_ALLOWLIST: ${MCP_TOOL_ALLOWLIST:-}
+      # Cap on tool / parameter description length sent to Ollama (0 = unlimited).
+      MCP_TOOL_DESC_MAX_CHARS: ${MCP_TOOL_DESC_MAX_CHARS:-200}
+      MCP_PARAM_DESC_MAX_CHARS: ${MCP_PARAM_DESC_MAX_CHARS:-80}
       MCP_CONFIG_PATH: /app/mcp.json
     extra_hosts:
       - "host.docker.internal:host-gateway"

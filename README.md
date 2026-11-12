@@ -178,6 +178,9 @@ Available variables:
 | `MCP_CONFIG_PATH` | `<project>/mcp.json` | Local MCP server configuration |
 | `MAX_TOOL_ITERATIONS` | `8` | Maximum model/tool loops per request |
 | `MCP_READONLY` | `1` | Hide tools whose names appear to modify data |
+| `MCP_TOOL_ALLOWLIST` | empty (= built-in 9-tool default) | Comma-separated tools exposed to the model; registered (`filesystem_read_text_file`) or server-local (`read_text_file`) names, case-insensitive; `all`/`*` = everything. Applied on top of `MCP_READONLY` |
+| `MCP_TOOL_DESC_MAX_CHARS` | `200` | Max characters of each tool description sent to Ollama (`0` = unlimited) |
+| `MCP_PARAM_DESC_MAX_CHARS` | `80` | Max characters of each parameter description in tool schemas (`0` = unlimited) |
 | `MEMORY_DIR` | `<project>/data/sessions` | Durable per-chat memory directory |
 | `MEMORY_RECENT_TURNS` | `4` | Recent turns inserted into each model prompt |
 | `MEMORY_SUMMARIZE_EVERY` | `6` | Completed turns between summary updates |
@@ -304,6 +307,14 @@ Security notes:
 - Use a narrowly scoped directory, never `/`, as the filesystem root.
 - `MCP_READONLY=1` is the default and hides tools with write-like names.
 - The read-only filter is a safety layer, not a security sandbox.
+- Every exposed tool schema is sent to the model on every request, which costs
+  prompt-processing time on small GPUs. `MCP_TOOL_ALLOWLIST` limits which tools
+  the model sees (default: `read_text_file`, `read_multiple_files`, `write_file`,
+  `edit_file`, `create_directory`, `list_directory`, `directory_tree`,
+  `move_file`, `search_files`; use `all` for every tool) and
+  `MCP_TOOL_DESC_MAX_CHARS` / `MCP_PARAM_DESC_MAX_CHARS` shorten the descriptions
+  (names, types, `required` and `enum` are never changed). A call to a hidden
+  tool is rejected with an error message. The exposed tools are logged at startup.
 - Do not add unrestricted shell tools without command allowlists and explicit
   user approval.
 - An empty or missing `mcp.json` leaves the bot in chat-only mode.
