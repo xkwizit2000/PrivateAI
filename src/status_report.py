@@ -475,12 +475,12 @@ async def collect_agent(ctx: StatusContext) -> Section:
                     level, issue = WARN, f"bot memory {used_pct:.0f}% of limit"
         if second.cpu_usage_usec is not None:
             avg = 100.0 * second.cpu_usage_usec / 1e6 / max(uptime, 1.0)
-            avg_txt = f"{avg:.0f}% avg" if uptime >= 120 else "avg n/a (just started)"
+            avg_txt = f"{avg:.0f}% avg" if uptime >= 120 else "avg n/a"
             now_txt = ""
             if first and first.cpu_usage_usec is not None and window > 0:
                 now_pct = 100.0 * (second.cpu_usage_usec - first.cpu_usage_usec) / 1e6 / window
-                now_txt = f"{max(now_pct, 0):.0f}% now / "
-            bits.append(f"cpu {now_txt}{avg_txt} (of 1 core)")
+                now_txt = f"{max(now_pct, 0):.0f}% now, "
+            bits.append(f"cpu {now_txt}{avg_txt} (1 core = 100%)")
     bits.append(f"loop lag {lag_ms:.0f} ms")
     if lag_ms >= cfg.loop_lag_warn_ms:
         level, issue = WARN, f"event loop lag {lag_ms:.0f} ms"
@@ -978,7 +978,8 @@ def _host_items(host: dict[str, Any], cfg: StatusConfig, now: float) -> tuple[st
             if not isinstance(entry, dict):
                 continue
             state, health = str(entry.get("state")), str(entry.get("health"))
-            text = f"{entry.get('name')} {state}" + (f" ({health})" if health not in ("none", "None") else "")
+            show_health = state == "running" and health not in ("none", "None")
+            text = f"{entry.get('name')} {state}" + (f" ({health})" if show_health else "")
             bits.append(text)
             if state != "running" or health == "unhealthy":
                 level = _raise(level, issues, FAIL, f"container {entry.get('name')} {state}/{health}")

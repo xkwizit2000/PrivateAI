@@ -234,6 +234,13 @@ class HostThresholdTests(unittest.TestCase):
         self.assertEqual(self.levels(host_json(watchdog=wd)), {"Ollama restarted 3x in 24h (watchdog)"})
         self.assertEqual(self.levels(host_json(watchdog=wd), watchdog_restarts_warn=5), set())
 
+    def test_stopped_container_does_not_show_stale_health(self):
+        host = host_json(containers=[{"name": "privateai-memory", "state": "exited", "health": "unhealthy"}])
+        _, items = sr._host_items(host, sr.StatusConfig(), NOW)
+        line = next(i for i in items if i.text.startswith("containers"))
+        self.assertEqual(line.text, "containers: privateai-memory exited")
+        self.assertEqual(line.level, sr.FAIL)
+
     def test_failed_units_are_informational_only(self):
         host = host_json()
         host["units"]["failed"] = ["foo.service"]
@@ -898,6 +905,68 @@ class GenVersionTests(unittest.TestCase):
             out = Path(d) / "VERSION"
             self.assertEqual(self.mod.main(["x", d, str(out)]), 0)
             self.assertEqual(out.read_text(), "commit=deadbeefcafe\nbranch=custom\n")
+
+
+class AgentTrackingTests(unittest.IsolatedAsyncioTestCase):
+    """_chat_with_monitoring feeds MODEL_STATS (metadata only)."""
+
+    async def call(self, client, timeout=5.0):
+        from src import agent
+
+        stats = ModelCallStats()
+        with patch("src.agent.MODEL_STATS", stats):
+            try:
+                await agent._chat_with_monitoring(
+                    client, model="m", messages=[], tools=None, think=False, timeout_seconds=timeout)
+                error = None
+            except Exception as exc:  # noqa: BLE001
+                error = exc
+        return stats, error
+
+    def response(self):
+        return SimpleNamespace(done_reason="stop", message=SimpleNamespace(content="hi", tool_calls=None))
+
+    async def test_success_error_and_timeout_are_recorded_without_text(self):
+        ok_client = SimpleNamespace(chat=unittest.mock.AsyncMock(return_value=self.response()))
+        stats, error = await self.call(ok_client)
+        self.assertIsNone(error)
+        self.assertEqual((stats.total_calls, stats.total_errors, stats.in_flight), (1, 0, 0))
+        self.assertIsNone(stats.last_call.outcome)
+
+        bad_client = SimpleNamespace(chat=unittest.mock.AsyncMock(side_effect=ValueError("private prompt text")))
+        stats, error = await self.call(bad_client)
+        self.assertIsInstance(error, ValueError)
+        self.assertEqual(stats.last_error.outcome, "ValueError")  # class name only
+        self.assertNotIn("private", repr(stats.last_error))
+        self.assertEqual(stats.in_flight, 0)
+
+        async def never(**kwargs):
+            await asyncio.sleep(30)
+
+        stats, error = await self.call(SimpleNamespace(chat=never), timeout=0.05)
+        self.assertIsInstance(error, TimeoutError)
+        self.assertEqual(stats.last_error.outcome, "timeout")
+        self.assertEqual(stats.in_flight, 0)
+
+    async def test_cancelled_call_is_recorded_and_not_left_in_flight(self):
+        from src import agent
+
+        stats = ModelCallStats()
+
+        async def never(**kwargs):
+            await asyncio.sleep(30)
+
+        with patch("src.agent.MODEL_STATS", stats):
+            task = asyncio.ensure_future(agent._chat_with_monitoring(
+                SimpleNamespace(chat=never), model="m", messages=[], tools=None, think=False,
+                timeout_seconds=10))
+            await asyncio.sleep(0.05)
+            self.assertEqual(stats.in_flight, 1)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertEqual(stats.in_flight, 0)
+        self.assertEqual(stats.last_error.outcome, "cancelled")
 
 
 class TelegramChunkingTests(unittest.IsolatedAsyncioTestCase):
