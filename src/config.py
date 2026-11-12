@@ -145,3 +145,51 @@ SESSION_STORAGE_PATH = os.getenv(
     str(PROJECT_ROOT / "data" / "session-adapter" / "storage.db"),
 )
 SESSION_MESSAGE_CHUNK = int(os.getenv("SESSION_MESSAGE_CHUNK", "1800"))
+
+# --- /status report (see README "/status") -------------------------------------------
+# Every threshold can be overridden through the environment; defaults are sensible for
+# a small always-on home server. A WARN/FAIL line makes the top verdict DEGRADED/DOWN.
+
+
+def _env_float(name: str, default: float) -> float:
+    """Read a float env var; empty or malformed values fall back to the default."""
+    raw = os.getenv(name, "").strip()
+    try:
+        return float(raw) if raw else default
+    except ValueError:
+        return default
+
+
+# Status markers: emoji (default) or plain text (OK/WARN/FAIL).
+STATUS_MARKERS = _env_choice("STATUS_MARKERS", "emoji", {"emoji", "text"})
+# Per-probe HTTP timeout and hard cap per collector (the whole /status stays ~3 s).
+STATUS_HTTP_TIMEOUT = _env_float("STATUS_HTTP_TIMEOUT", 2.0)
+STATUS_COLLECTOR_TIMEOUT = _env_float("STATUS_COLLECTOR_TIMEOUT", 2.5)
+# Host exporter output (bind-mounted read-only; see ops/pai-status/README.md).
+STATUS_HOST_FILE = Path(os.getenv("STATUS_HOST_FILE", "/host-status/host.json"))
+STATUS_HOST_STALE_SECONDS = _env_float("STATUS_HOST_STALE_SECONDS", 120.0)
+# Host thresholds.
+STATUS_LOAD_WARN_RATIO = _env_float("STATUS_LOAD_WARN_RATIO", 1.0)  # load5 / cpu count
+STATUS_CPU_WARN_PERCENT = _env_float("STATUS_CPU_WARN_PERCENT", 90.0)
+STATUS_MEM_AVAILABLE_WARN_PERCENT = _env_float("STATUS_MEM_AVAILABLE_WARN_PERCENT", 10.0)
+STATUS_SWAP_WARN_PERCENT = _env_float("STATUS_SWAP_WARN_PERCENT", 50.0)
+STATUS_DISK_WARN_PERCENT = _env_float("STATUS_DISK_WARN_PERCENT", 85.0)
+STATUS_DISK_FAIL_PERCENT = _env_float("STATUS_DISK_FAIL_PERCENT", 95.0)
+STATUS_VRAM_WARN_PERCENT = _env_float("STATUS_VRAM_WARN_PERCENT", 95.0)
+STATUS_CPU_TEMP_WARN_C = _env_float("STATUS_CPU_TEMP_WARN_C", 90.0)
+STATUS_GPU_TEMP_WARN_C = _env_float("STATUS_GPU_TEMP_WARN_C", 90.0)
+# Ollama restarts by the watchdog within 24 h that make the verdict DEGRADED.
+STATUS_WATCHDOG_RESTARTS_WARN = int(_env_float("STATUS_WATCHDOG_RESTARTS_WARN", 3))
+# Bot process.
+STATUS_CONTAINER_MEM_WARN_PERCENT = _env_float("STATUS_CONTAINER_MEM_WARN_PERCENT", 90.0)
+STATUS_LOOP_LAG_WARN_MS = _env_float("STATUS_LOOP_LAG_WARN_MS", 250.0)
+# A chat-model error newer than this many seconds is a WARN.
+STATUS_MODEL_ERROR_WINDOW_SECONDS = _env_float("STATUS_MODEL_ERROR_WINDOW_SECONDS", 900.0)
+# Legacy memory: summary backlog (unsummarized transcript records) and summary age.
+STATUS_MEMORY_BACKLOG_WARN = int(_env_float("STATUS_MEMORY_BACKLOG_WARN", 24))
+STATUS_SUMMARY_STALE_DAYS = _env_float("STATUS_SUMMARY_STALE_DAYS", 7.0)
+# Dual-write drift: newest legacy record vs newest service turn (seconds), and how many
+# more legacy records than service turns are tolerated (the service de-duplicates
+# identical messages and redacts, so a few missing records are normal).
+STATUS_DUAL_WRITE_LAG_SECONDS = _env_float("STATUS_DUAL_WRITE_LAG_SECONDS", 300.0)
+STATUS_DUAL_WRITE_MISSING_WARN = int(_env_float("STATUS_DUAL_WRITE_MISSING_WARN", 10))

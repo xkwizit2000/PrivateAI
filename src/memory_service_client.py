@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -135,6 +136,8 @@ class ServiceMemory:
             "append_fail": 0,
             "skipped_open": 0,
         }
+        # Wall time of the last successful dual-write append (None until one succeeds).
+        self.last_append_epoch: float | None = None
         self._recall_ms: deque[float] = deque(maxlen=500)
         self._top_scores: deque[float] = deque(maxlen=500)
 
@@ -160,6 +163,11 @@ class ServiceMemory:
         if self._http is not None:
             await self._http.aclose()
             self._http = None
+
+    @property
+    def pending_tasks(self) -> int:
+        """Background calls (dual-write / shadow recall) still in flight."""
+        return len(self._tasks)
 
     def spawn(self, coro: Awaitable[Any]) -> asyncio.Task[Any]:
         """Run a coroutine in the background; exceptions are swallowed and logged."""
@@ -307,6 +315,7 @@ class ServiceMemory:
             self.counters["append_fail"] += 1
             return False
         self.counters["append_ok"] += 1
+        self.last_append_epoch = time.time()
         logger.info(
             "memory dual-write: turns_new=%s chunks_new=%s ms=%.0f",
             data.get("turns_new", "?"),
@@ -428,6 +437,42 @@ class ServiceMemory:
         return await self._request(
             "stats", "GET", "/v1/stats", timeout=max(self.recall_timeout, 5.0), force=True
         )
+
+    async def probe(self, timeout: float = 2.0) -> dict[str, Any]:
+        """Read-only health probe for /status: GET /healthz then GET /v1/stats.
+
+        Unlike the chat-path calls this never touches the circuit breaker or the
+        counters (a status check must not change behaviour). Returns
+        ``{"healthy": bool, "ms": float, "stats": dict|None, "error": str|None}``;
+        it never raises.
+        """
+        started = monotonic()
+        try:
+            client = self._client()
+            health = await asyncio.wait_for(client.get("/healthz"), timeout=timeout)
+            health.raise_for_status()
+            remaining = max(0.2, timeout - (monotonic() - started))
+            stats_response = await asyncio.wait_for(client.get("/v1/stats"), timeout=remaining)
+            stats_response.raise_for_status()
+            stats = stats_response.json()
+            return {
+                "healthy": True,
+                "ms": (monotonic() - started) * 1000,
+                "stats": stats if isinstance(stats, dict) else None,
+                "error": None,
+            }
+        except Exception as exc:  # noqa: BLE001 - /status must never raise
+            error = type(exc).__name__
+            if isinstance(exc, httpx.HTTPStatusError):
+                error = f"HTTP {exc.response.status_code}"
+            elif isinstance(exc, asyncio.TimeoutError):
+                error = "timeout"
+            return {
+                "healthy": False,
+                "ms": (monotonic() - started) * 1000,
+                "stats": None,
+                "error": error,
+            }
 
     async def core(self, session_id: str | int, turns: int = 1) -> dict[str, Any] | None:
         """GET /v1/core for the fact profile (service backend)."""

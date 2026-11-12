@@ -315,6 +315,11 @@ class McpHub:
         )
         # Qualified names of tools hidden by readonly/allowlist (for friendly errors).
         self._hidden: set[str] = set()
+        # qualified hidden tool name -> server name (for per-server counts in /status).
+        self._hidden_server: dict[str, str] = {}
+        # Every configured server -> {"transport": stdio|sse, "state": ..., "error": ...}
+        # (state: connected | failed | disabled). Feeds /status; never holds secrets.
+        self._server_info: dict[str, dict[str, Any]] = {}
         # Every name form seen from servers, to warn about unknown allowlist entries.
         self._seen_names: set[str] = set()
         self.memory_tools = (MEMORY_TOOLS == "on") if memory_tools is None else memory_tools
@@ -356,11 +361,22 @@ class McpHub:
             return
 
         for server_name, server_cfg in servers.items():
-            if server_cfg.get("url"):
+            is_sse = bool(server_cfg.get("url"))
+            self._server_info[server_name] = {
+                "transport": "sse" if is_sse else "stdio",
+                "state": "failed",
+                "error": None,
+            }
+            if is_sse:
                 # Remote (SSE) servers are optional add-ons: never let one block startup.
                 try:
                     await self._connect_server(server_name, server_cfg)
+                    if server_name in self._sessions:
+                        self._server_info[server_name]["state"] = "connected"
+                    else:
+                        self._server_info[server_name]["state"] = "disabled"
                 except Exception as exc:  # noqa: BLE001
+                    self._server_info[server_name]["error"] = _exc_name(exc)
                     self._sse_down_until[server_name] = monotonic() + SSE_RETRY_COOLDOWN_SECONDS
                     logger.warning(
                         "MCP SSE server '%s' unavailable at startup (%s); continuing without it",
@@ -369,6 +385,7 @@ class McpHub:
                     )
                 continue
             await self._connect_server(server_name, server_cfg)
+            self._server_info[server_name]["state"] = "connected"
 
         self.warn_unknown_allowlist_entries()
         logger.info(
@@ -455,6 +472,54 @@ class McpHub:
         meta = self._tools.get(qualified_name)
         return None if meta is None else meta["group"]
 
+    def _hide(self, qualified: str, server_name: str) -> None:
+        """Remember a tool hidden by readonly/allowlist/MEMORY_TOOLS (and its server)."""
+        self._hidden.add(qualified)
+        self._hidden_server[qualified] = server_name
+
+    def status_snapshot(self) -> dict[str, Any]:
+        """Secret-free view of servers/tools/allowlist for /status (no I/O)."""
+        servers: list[dict[str, Any]] = []
+        for name, info in self._server_info.items():
+            exposed = sorted(
+                qualified for qualified, meta in self._tools.items() if meta["server_name"] == name
+            )
+            hidden = sorted(q for q, srv in self._hidden_server.items() if srv == name)
+            state = info["state"]
+            if info["transport"] == "sse" and state != "disabled":
+                conn = self._sse_conn.get(name)
+                # SSE: live connection only; a dropped stream reconnects on next use.
+                state = "connected" if conn is not None and conn.alive else "disconnected"
+            servers.append(
+                {
+                    "name": name,
+                    "transport": info["transport"],
+                    "state": state,
+                    "error": info.get("error"),
+                    "group": server_group(name),
+                    "exposed": exposed,
+                    "hidden": hidden,
+                }
+            )
+        if self.allowlist is None:
+            allow_label = "all tools"
+        elif self.allowlist == frozenset(name.lower() for name in DEFAULT_TOOL_ALLOWLIST):
+            allow_label = "default list"
+        else:
+            allow_label = "custom list"
+        return {
+            "servers": servers,
+            "allowlist": allow_label,
+            "allowlist_size": None if self.allowlist is None else len(self.allowlist),
+            "readonly": self.readonly,
+            "desc_max_chars": self.desc_max_chars,
+            "param_desc_max_chars": self.param_desc_max_chars,
+            "memory_tools": self.memory_tools,
+            "tools_total": len(self._tools),
+            "hidden_total": len(self._hidden),
+            "config_found": self.config_path.exists(),
+        }
+
     def _register_tool(self, server_name: str, session: Any, tool: Any) -> bool:
         """Register one server tool unless readonly/allowlist hides it; True if exposed."""
         qualified = _sanitize_name(f"{server_name}_{tool.name}")
@@ -464,11 +529,11 @@ class McpHub:
             # Memory tools: only MEMORY_TOOLS decides (not the file allowlist/readonly lists).
             if not self.memory_tools:
                 logger.info("Hiding memory tool (MEMORY_TOOLS=off): %s.%s", server_name, tool.name)
-                self._hidden.add(qualified)
+                self._hide(qualified, server_name)
                 return False
         elif self.readonly and _is_write_tool(tool.name):
             logger.info("Skipping write tool in readonly mode: %s.%s", server_name, tool.name)
-            self._hidden.add(qualified)
+            self._hide(qualified, server_name)
             return False
         if (
             group != GROUP_MEMORY
@@ -476,7 +541,7 @@ class McpHub:
             and not (tool_name_candidates(server_name, tool.name, qualified) & self.allowlist)
         ):
             logger.info("Hiding tool not in MCP_TOOL_ALLOWLIST: %s.%s", server_name, tool.name)
-            self._hidden.add(qualified)
+            self._hide(qualified, server_name)
             return False
         if qualified in self._tools:
             raise ValueError(f"Duplicate MCP tool name after sanitizing: {qualified}")

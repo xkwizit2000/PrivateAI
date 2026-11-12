@@ -32,6 +32,7 @@ from .mcp_client import McpHub
 from .memory import MemoryStore
 from .memory_service_client import ServiceMemory
 from .rag import RagStore
+from .runtime_stats import MODEL_STATS
 from .tool_routing import DEFAULT_ROUTER, ToolRouter
 
 logger = logging.getLogger(__name__)
@@ -116,6 +117,7 @@ async def _chat_with_retry(
         if retry_state.get("used"):
             raise OllamaUnavailableError(str(exc)) from exc
         retry_state["used"] = True
+        MODEL_STATS.record_retry()
         logger.warning(
             "Ollama chat failed (%s: %s); waiting up to %.0fs for %s then retrying once",
             type(exc).__name__,
@@ -262,6 +264,8 @@ async def _chat_with_monitoring(
 ) -> Any:
     """Call Ollama chat with stall warnings, timeout, and performance logging."""
     started = monotonic()
+    call_id = MODEL_STATS.begin()
+    outcome: str | None = "cancelled"
     watcher = asyncio.create_task(_watch_for_stall(model, started, timeout_seconds))
     stream_reasoning = bool(think and verbose and progress is not None)
 
@@ -360,7 +364,9 @@ async def _chat_with_monitoring(
             _stream() if stream_reasoning else _non_stream(),
             timeout=timeout_seconds,
         )
+        outcome = None
     except asyncio.TimeoutError as exc:
+        outcome = "timeout"
         waited = monotonic() - started
         logger.error(
             "Ollama chat timed out: model=%s waited=%.0fs timeout=%.0fs "
@@ -373,7 +379,11 @@ async def _chat_with_monitoring(
         raise TimeoutError(
             f"Ollama model '{model}' timed out after {int(waited)}s"
         ) from exc
+    except Exception as exc:
+        outcome = type(exc).__name__  # class name only: never message text
+        raise
     finally:
+        MODEL_STATS.end(call_id, outcome)
         watcher.cancel()
         with suppress(asyncio.CancelledError):
             await watcher
