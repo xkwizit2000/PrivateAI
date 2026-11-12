@@ -619,14 +619,21 @@ class MemoryCollectorTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as d:
             section = await self.run_memory(Path(d), None, records=60, summarized=10)
             self.assertIn("summary backlog 50 > 24", sr.compute_verdict([section])[1])
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as d:  # backlog 20 >= trigger 12 and summary 10 days old
             tmp = Path(d)
-            write_legacy(tmp, 14, 10, summary_updated=NOW - 10 * 86400)
-            memory = SimpleNamespace(data_dir=tmp / "sessions", recent_turns=4)
+            write_legacy(tmp, 30, 10, summary_updated=NOW - 10 * 86400)
+            memory = SimpleNamespace(data_dir=tmp / "sessions", recent_turns=4, summarize_every=6)
             ctx = ctx_for(tmp, memory=memory)
             ctx.legacy_task = asyncio.ensure_future(asyncio.to_thread(sr.scan_legacy_memory, memory.data_dir))
             section = await sr.collect_memory(ctx)
-            self.assertIn("summary older than 7d with backlog", sr.compute_verdict([section])[1])
+            self.assertIn("summary older than 7d with backlog >= 12", sr.compute_verdict([section])[1])
+        with tempfile.TemporaryDirectory() as d:  # quiet chat: old summary + small leftover backlog is normal
+            tmp = Path(d)
+            write_legacy(tmp, 14, 10, summary_updated=NOW - 100 * 86400)
+            memory = SimpleNamespace(data_dir=tmp / "sessions", recent_turns=4, summarize_every=6)
+            ctx = ctx_for(tmp, memory=memory)
+            ctx.legacy_task = asyncio.ensure_future(asyncio.to_thread(sr.scan_legacy_memory, memory.data_dir))
+            self.assertEqual((await sr.collect_memory(ctx)).level, sr.OK)
         with tempfile.TemporaryDirectory() as d:  # old summary but no backlog is fine
             section = await self.run_memory(Path(d), None, records=10, summarized=10)
             self.assertEqual(section.level, sr.OK)

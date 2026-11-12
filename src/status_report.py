@@ -475,11 +475,12 @@ async def collect_agent(ctx: StatusContext) -> Section:
                     level, issue = WARN, f"bot memory {used_pct:.0f}% of limit"
         if second.cpu_usage_usec is not None:
             avg = 100.0 * second.cpu_usage_usec / 1e6 / max(uptime, 1.0)
+            avg_txt = f"{avg:.0f}% avg" if uptime >= 120 else "avg n/a (just started)"
             now_txt = ""
             if first and first.cpu_usage_usec is not None and window > 0:
                 now_pct = 100.0 * (second.cpu_usage_usec - first.cpu_usage_usec) / 1e6 / window
                 now_txt = f"{max(now_pct, 0):.0f}% now / "
-            bits.append(f"cpu {now_txt}{avg:.0f}% avg (of 1 core)")
+            bits.append(f"cpu {now_txt}{avg_txt} (of 1 core)")
     bits.append(f"loop lag {lag_ms:.0f} ms")
     if lag_ms >= cfg.loop_lag_warn_ms:
         level, issue = WARN, f"event loop lag {lag_ms:.0f} ms"
@@ -825,10 +826,13 @@ async def collect_memory(ctx: StatusContext) -> Section:
         newest_summary = max(
             (s.summary_epoch for s in legacy.sessions.values() if s.summary_epoch), default=None
         )
+        # A leftover backlog below the summarization trigger (2 x MEMORY_SUMMARIZE_EVERY records)
+        # is normal for a quiet chat: it is only "stale" once summarizing should have fired.
+        trigger = 2 * int(getattr(ctx.memory, "summarize_every", 6) or 6)
         for scan in legacy.sessions.values():
-            old = scan.summary_epoch is not None and now - scan.summary_epoch > stale_days * 86400
-            if old and scan.records - scan.summarized > 0:
-                level, issue = WARN, f"summary older than {stale_days:g}d with backlog"
+            old = scan.summary_epoch is None or now - scan.summary_epoch > stale_days * 86400
+            if old and scan.records - scan.summarized >= trigger:
+                level, issue = WARN, f"summary older than {stale_days:g}d with backlog >= {trigger}"
         chars = sum(s.summary_chars for s in legacy.sessions.values())
         section.items.append(
             Item(
@@ -1193,7 +1197,7 @@ def thresholds_block(cfg: StatusConfig) -> str:
         f"• WARN: MCP server not connected · memory breaker not closed · memory service unreachable "
         f"(FAIL marker) · dual-write drift (> {cfg.dual_write_missing_warn} missing records or "
         f"> {cfg.dual_write_lag_seconds:g}s behind) · summary backlog > {cfg.memory_backlog_warn} or "
-        f"summary older than {cfg.summary_stale_days:g}d with backlog\n"
+        f"summary older than {cfg.summary_stale_days:g}d with backlog >= summarize trigger\n"
         "• FAIL: systemd unit ollama/docker not active · container not running/unhealthy"
     )
 

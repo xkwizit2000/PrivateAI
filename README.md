@@ -338,8 +338,9 @@ All thresholds are environment variables (`STATUS_*`, listed in `.env.example`;
   unreachable (FAIL marker); dual-write drift (more than 10 legacy records missing in
   the service, or the newest legacy record more than 5 min ahead of the service's
   newest turn; the service de-duplicates identical messages, so a few missing records
-  are normal); summary backlog > 24 records, or a summary older than 7 days while a
-  backlog exists.
+  are normal); summary backlog > 24 records, or a summary older than 7 days while the backlog has
+  reached the summarization trigger (2 x `MEMORY_SUMMARIZE_EVERY` = 12 records; a small
+  leftover backlog in a quiet chat is normal).
 * Informational only: chat model not loaded (it loads on the next message), pending
   reboot, unrelated failed systemd units, "last error" older than 15 min.
 
