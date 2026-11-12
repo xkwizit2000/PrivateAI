@@ -86,7 +86,7 @@ def legacy_rag(host, rag_db, query, top_k=4, max_chars=4000, min_score=0.25):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--transcripts", required=True)
-    ap.add_argument("--session", default="7296068402")
+    ap.add_argument("--session", required=True, help="transcript file stem, e.g. the Telegram chat id")
     ap.add_argument("--rag-db", required=True)
     ap.add_argument("--ollama", default="http://127.0.0.1:11434")
     ap.add_argument("--model", default="gemma4:e4b-jt-8k")

@@ -81,10 +81,22 @@ def build_queries(svc: MemoryService, n: int, rng: random.Random):
     return out
 
 
+def _norm(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
 def rank_of(svc, q, target, exclude, mode, recency):
+    """Rank of the target turn; a hit with identical text (a retried duplicate) counts as the target."""
     res = svc.search_chunks(q, k=10, mode=mode, exclude_turns=exclude, recency=recency)
+    cache = svc.__dict__.setdefault("_eval_norm", {})
+    if target not in cache:
+        cache[target] = _norm(svc.store.get_turn(target)["content"])
     for i, h in enumerate(res.hits):
         if h.turn_id == target:
+            return i + 1
+        if h.turn_id not in cache:
+            cache[h.turn_id] = _norm(svc.store.get_turn(h.turn_id)["content"])
+        if cache[h.turn_id] == cache[target]:
             return i + 1
     return None
 

@@ -36,6 +36,7 @@ def main():
     ap.add_argument("--token", default="")
     ap.add_argument("--transcripts", required=True)
     ap.add_argument("--n", type=int, default=150)
+    ap.add_argument("--session", default="", help="session id (transcript file stem) for /v1/recall")
     a = ap.parse_args()
     rng = random.Random(3)
     texts = []
@@ -62,7 +63,7 @@ def main():
         out[f"search_{mode}_server_ms"] = stats(server_ms)
         if mode == "hybrid":
             out["search_hybrid_output_chars"] = {"p50": int(statistics.median(chars)), "max": max(chars)}
-    lat = [post(a.url, "/v1/recall", a.token, {"query": q, "session": "7296068402"})[0] for q in qs[:100]]
+    lat = [post(a.url, "/v1/recall", a.token, {"query": q, "session": a.session or None})[0] for q in qs[:100]]
     out["recall_http_ms"] = stats(lat)
     with ThreadPoolExecutor(4) as ex:
         t = time.perf_counter()
