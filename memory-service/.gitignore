@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.db
+*.db-wal
+*.db-shm
+.pytest_cache/
+eval/private/
+*.private.*
