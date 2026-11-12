@@ -9,10 +9,16 @@ from .agent import ProgressCallback, run_agent
 from .commands import handle_command, parse_slash_command
 from .config import (
     MCP_CONFIG_PATH,
+    MEMORY_BACKEND,
     MEMORY_DIR,
+    MEMORY_DUAL_WRITE,
     MEMORY_MAX_CONTEXT_CHARS,
+    MEMORY_RECALL,
     MEMORY_RECENT_TURNS,
+    MEMORY_SERVICE_URL,
     MEMORY_SUMMARIZE_EVERY,
+    MEMORY_TOKEN,
+    MEMORY_TOOLS,
     OLLAMA_HOST,
     OLLAMA_MODEL,
     OLLAMA_THINK,
@@ -29,6 +35,7 @@ from .config import (
 )
 from .mcp_client import McpHub
 from .memory import MemoryStore
+from .memory_service_client import CoreMemoryStore, ServiceMemory
 from .rag import RagStore
 from .session_settings import SessionSettings
 
@@ -43,6 +50,7 @@ class AppRuntime:
     memory: MemoryStore
     rag: RagStore | None
     hub: McpHub
+    memory_service: ServiceMemory | None = None
 
     @classmethod
     async def create(cls) -> AppRuntime:
@@ -55,16 +63,47 @@ class AppRuntime:
         )
         logger.info("Session settings enabled at %s", SESSION_SETTINGS_PATH)
 
-        memory = MemoryStore(
-            MEMORY_DIR,
+        memory_service: ServiceMemory | None = None
+        if MEMORY_SERVICE_URL:
+            memory_service = ServiceMemory(
+                MEMORY_SERVICE_URL,
+                MEMORY_TOKEN,
+                recall_mode=MEMORY_RECALL,
+                dual_write=MEMORY_DUAL_WRITE,
+                backend=MEMORY_BACKEND,
+            )
+        service_backend = MEMORY_BACKEND == "service" and memory_service is not None
+        if MEMORY_BACKEND == "service" and memory_service is None:
+            logger.warning(
+                "MEMORY_BACKEND=service but MEMORY_SERVICE_URL is empty; using the legacy backend"
+            )
+        logger.info(
+            "Memory config: MEMORY_BACKEND=%s MEMORY_RECALL=%s MEMORY_TOOLS=%s "
+            "MEMORY_DUAL_WRITE=%s service=%s",
+            "service" if service_backend else "legacy",
+            MEMORY_RECALL if memory_service is not None else "off",
+            MEMORY_TOOLS,
+            "on" if MEMORY_DUAL_WRITE or service_backend else "off",
+            MEMORY_SERVICE_URL or "not configured",
+        )
+
+        memory_args = dict(
             recent_turns=MEMORY_RECENT_TURNS,
             summarize_every=MEMORY_SUMMARIZE_EVERY,
             max_context_chars=MEMORY_MAX_CONTEXT_CHARS,
         )
-        logger.info("Durable conversation memory enabled at %s", MEMORY_DIR)
+        memory: MemoryStore
+        if service_backend:
+            memory = CoreMemoryStore(MEMORY_DIR, service=memory_service, **memory_args)
+            logger.info("Core-only memory (service backend) at %s", MEMORY_DIR)
+        else:
+            memory = MemoryStore(MEMORY_DIR, **memory_args)
+            logger.info("Durable conversation memory enabled at %s", MEMORY_DIR)
 
         rag: RagStore | None = None
-        if RAG_ENABLED:
+        if service_backend:
+            logger.info("Conversation RAG disabled (service backend)")
+        elif RAG_ENABLED:
             rag = RagStore(
                 RAG_DIR,
                 embed_model=RAG_EMBED_MODEL,
@@ -99,11 +138,19 @@ class AppRuntime:
         else:
             logger.info("Running in chat-only mode (no MCP tools loaded)")
 
-        return cls(settings=settings, memory=memory, rag=rag, hub=hub)
+        return cls(
+            settings=settings,
+            memory=memory,
+            rag=rag,
+            hub=hub,
+            memory_service=memory_service,
+        )
 
     async def close(self) -> None:
-        """Shut down MCP servers owned by this runtime."""
+        """Shut down MCP servers and the memory-service client owned by this runtime."""
         await self.hub.close()
+        if self.memory_service is not None:
+            await self.memory_service.close()
 
     async def handle_text(
         self,
@@ -115,7 +162,9 @@ class AppRuntime:
         """Route slash commands or run the agent for a normal chat turn."""
         command = parse_slash_command(text)
         if command is not None:
-            reply = await handle_command(self.settings, session_id, command)
+            reply = await handle_command(
+                self.settings, session_id, command, memory_service=self.memory_service
+            )
             if reply is not None:
                 return reply
             return f"Unknown command: /{command.name}"
@@ -136,4 +185,5 @@ class AppRuntime:
             timeout_seconds=timeout_seconds,
             verbose=verbose,
             tool_mode=tool_mode,
+            memory_service=self.memory_service,
         )

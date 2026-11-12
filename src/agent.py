@@ -15,6 +15,7 @@ from ollama import AsyncClient, ResponseError
 from .config import (
     MAX_TOOL_ITERATIONS,
     MEMORY_RECENT_TURNS,
+    MEMORY_TOOLS,
     OLLAMA_HOST,
     OLLAMA_MAX_CONTINUATIONS,
     OLLAMA_MODEL,
@@ -29,6 +30,7 @@ from .config import (
 )
 from .mcp_client import McpHub
 from .memory import MemoryStore
+from .memory_service_client import ServiceMemory
 from .rag import RagStore
 from .tool_routing import DEFAULT_ROUTER, ToolRouter
 
@@ -395,12 +397,30 @@ async def _remember_response(
     user_prompt: str,
     response: str,
     model: str,
+    memory_service: ServiceMemory | None = None,
 ) -> str:
-    """Persist the completed turn and kick off summary/RAG indexing in the background."""
+    """Persist the completed turn and kick off summary/RAG indexing in the background.
+
+    With a memory service configured the same completed turn is also sent to it
+    (fire-and-forget dual-write; the reply never waits and failures are swallowed).
+    Only turns that reach this function are saved, so failed/retried turns that
+    return an error message earlier are stored nowhere, exactly as before.
+    """
     if memory is None or session_id is None:
         return response
 
-    await memory.remember_turn(session_id, user_prompt, response)
+    timestamp = await memory.remember_turn(session_id, user_prompt, response)
+    service_backend = memory_service is not None and memory_service.backend == "service"
+    if memory_service is not None and (memory_service.dual_write or service_backend):
+        memory_service.dual_write_turn(
+            session_id,
+            user_prompt,
+            response,
+            timestamp if isinstance(timestamp, str) else None,
+        )
+    if service_backend:
+        return response  # service backend: no rolling summary and no RAG indexing
+
     task = asyncio.create_task(
         memory.summarize_if_needed(
             session_id,
@@ -457,17 +477,44 @@ async def run_agent(
     verbose: bool = False,
     tool_mode: str | None = None,
     router: ToolRouter | None = None,
+    memory_service: ServiceMemory | None = None,
+    memory_tools: bool | None = None,
 ) -> str:
     """Run one user turn, optionally using MCP tools via Ollama tool calling.
 
     ``tool_mode`` (auto|always|never; default TOOL_ROUTING) controls whether the
     tool schemas are sent to the model for this turn.
+
+    ``memory_service`` (optional) receives a copy of each completed turn and answers
+    the per-turn recall query according to its ``recall_mode``: ``shadow`` runs the
+    query in the background and only logs metadata; ``on`` injects the gated block as
+    a system message. ``memory_tools`` (default MEMORY_TOOLS=on) enables routing of
+    the memory MCP tool group.
     """
     think_enabled = OLLAMA_THINK if think is None else think
     chat_timeout = (
         OLLAMA_TIMEOUT_SECONDS if timeout_seconds is None else float(timeout_seconds)
     )
+    memory_tools_on = (MEMORY_TOOLS == "on") if memory_tools is None else memory_tools
     client = AsyncClient(host=OLLAMA_HOST, timeout=chat_timeout)
+
+    # Per-turn recall against the memory service. shadow: scheduled and forgotten (zero
+    # added latency, metadata-only log line). on: runs concurrently with the legacy
+    # context assembly below and is awaited just before the model call (bounded timeout).
+    recall_task: asyncio.Task[str] | None = None
+    if (
+        memory_service is not None
+        and session_id is not None
+        and user_prompt.strip()
+        and memory_service.recall_mode in ("shadow", "on")
+    ):
+        if memory_service.recall_mode == "shadow":
+            memory_service.start_shadow_recall(user_prompt, session_id)
+        else:
+            recall_task = memory_service.spawn(
+                memory_service.recall_block(user_prompt, session_id)
+            )
+
     messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
     if memory is not None and session_id is not None:
         messages.extend(await memory.context_messages(session_id))
@@ -488,18 +535,52 @@ async def run_agent(
             ):
                 insert_at = 2
             messages.insert(insert_at, rag_message)
+    if recall_task is not None:
+        recall_block = ""
+        try:
+            recall_block = await recall_task
+        except Exception:  # noqa: BLE001 - recall must never break a turn
+            logger.warning("memory recall failed; continuing without it")
+        if recall_block:
+            insert_at = 1
+            while (
+                insert_at < len(messages) and messages[insert_at].get("role") == "system"
+            ):
+                insert_at += 1
+            messages.insert(insert_at, {"role": "system", "content": recall_block})
     messages.append({"role": "user", "content": user_prompt})
 
     router = router or DEFAULT_ROUTER
     routing_mode = tool_mode or TOOL_ROUTING
+    offered_names: set[str] | None = None
     if hub is not None and hub.tool_names:
-        decision = router.decide(routing_mode, session_id, user_prompt)
-        tools = hub.as_ollama_tools() if decision.tools_on else None
+        if not memory_tools_on:
+            decision = router.decide(routing_mode, session_id, user_prompt)
+            tools = hub.as_ollama_tools() if decision.tools_on else None
+        else:
+            decision = router.decide(
+                routing_mode, session_id, user_prompt, memory_tools=True
+            )
+            groups = {
+                group
+                for group, on in (("files", decision.tools_on), ("memory", decision.memory_on))
+                if on
+            }
+            tools = (hub.as_ollama_tools(groups=groups) or None) if groups else None
+            if decision.memory_on:
+                hub.kick_reconnect()  # background; heals a memory server that was down
+            offered_names = {t["function"]["name"] for t in tools or []}
         logger.info(
             "tool routing: tools=%s reason=%s",
             "on" if decision.tools_on else "off",
             decision.reason,
         )
+        if memory_tools_on:
+            logger.info(
+                "tool routing: memory=%s reason=%s",
+                "on" if decision.memory_on else "off",
+                decision.memory_reason,
+            )
     else:
         tools = None
         logger.info("tool routing: tools=off reason=no MCP tools registered")
@@ -543,7 +624,8 @@ async def run_agent(
             if progress is not None:
                 await progress("responding", None)
             return await _remember_response(
-                memory, rag, session_id, user_prompt, final_response, model
+                memory, rag, session_id, user_prompt, final_response, model,
+                memory_service,
             )
         message = response.message
         messages.append(_message_to_dict(message))
@@ -607,7 +689,8 @@ async def run_agent(
             if progress is not None:
                 await progress("responding", None)
             return await _remember_response(
-                memory, rag, session_id, user_prompt, final_response, model
+                memory, rag, session_id, user_prompt, final_response, model,
+                memory_service,
             )
 
         if hub is None:
@@ -615,7 +698,8 @@ async def run_agent(
             if progress is not None:
                 await progress("responding", None)
             return await _remember_response(
-                memory, rag, session_id, user_prompt, final_response, model
+                memory, rag, session_id, user_prompt, final_response, model,
+                memory_service,
             )
 
         for call in tool_calls:
@@ -634,8 +718,18 @@ async def run_agent(
                     f"Error: tool '{name}' is not available for this message. "
                     "Answer without tools."
                 )
+            elif offered_names is not None and name not in offered_names:
+                # Memory routing is on and this tool's group was not offered this turn.
+                logger.warning("Model called tool %s which was not offered this turn", name)
+                tool_result = (
+                    f"Error: tool '{name}' is not available for this message. "
+                    "Answer without it."
+                )
             else:
-                router.mark_active(session_id)
+                if offered_names is None:
+                    router.mark_active(session_id)
+                else:
+                    router.mark_active(session_id, hub.tool_group(name) or "files")
                 tool_result = await hub.call_tool(name, arguments)
             messages.append(
                 {
@@ -651,5 +745,5 @@ async def run_agent(
     if progress is not None:
         await progress("responding", None)
     return await _remember_response(
-        memory, rag, session_id, user_prompt, final_response, model
+        memory, rag, session_id, user_prompt, final_response, model, memory_service
     )

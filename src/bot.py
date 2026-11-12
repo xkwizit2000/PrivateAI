@@ -76,7 +76,7 @@ async def keep_typing(message: Message) -> None:
 
 
 async def _reply_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle Telegram slash commands (/think, /timeout, /verbose, /tools, /status)."""
+    """Handle Telegram slash commands (/think, /timeout, /verbose, /tools, /status, /memory, /recall)."""
     if update.message is None or update.effective_user is None:
         return
     if not _authorized(update):
@@ -89,7 +89,12 @@ async def _reply_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if command is None:
         await update.message.reply_text("Unrecognized command.")
         return
-    reply = await handle_command(runtime.settings, _session_id(update), command)
+    reply = await handle_command(
+        runtime.settings,
+        _session_id(update),
+        command,
+        memory_service=runtime.memory_service,
+    )
     if reply is None:
         await update.message.reply_text(f"Unknown command: /{command.name}")
         return
@@ -219,6 +224,8 @@ def main() -> None:
     app.add_handler(CommandHandler("verbose", _reply_command))
     app.add_handler(CommandHandler("tools", _reply_command))
     app.add_handler(CommandHandler("status", _reply_command))
+    app.add_handler(CommandHandler("memory", _reply_command))
+    app.add_handler(CommandHandler("recall", _reply_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Headless Bot Server Online via Telegram Pipeline...")

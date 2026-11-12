@@ -144,8 +144,12 @@ class MemoryStore:
         session_id: str | int,
         user_message: str,
         assistant_message: str,
-    ) -> None:
-        """Append a completed turn to the durable transcript."""
+    ) -> str:
+        """Append a completed turn to the durable transcript; return its timestamp.
+
+        The timestamp is returned so the memory service can be sent the exact same
+        records (its ingest is idempotent on timestamp/role/content).
+        """
         transcript_path, _ = self._paths(session_id)
         timestamp = datetime.now(timezone.utc).isoformat()
         records = (
@@ -158,6 +162,7 @@ class MemoryStore:
                 for record in records:
                     handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             os.chmod(transcript_path, 0o600)
+        return timestamp
 
     async def summarize_if_needed(
         self,

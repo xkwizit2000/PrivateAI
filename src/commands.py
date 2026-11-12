@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 
 from .config import OLLAMA_THINK, OLLAMA_TIMEOUT_SECONDS
+from .memory_service_client import ServiceMemory
 from .ollama_status import fetch_ollama_status
 from .session_settings import (
     MAX_TIMEOUT_SECONDS,
@@ -41,6 +42,7 @@ async def handle_command(
     settings: SessionSettings,
     session_id: str | int,
     command: ParsedCommand,
+    memory_service: ServiceMemory | None = None,
 ) -> str | None:
     """Return a reply for a known command, or None if the command is unknown."""
     if command.name == "status":
@@ -53,7 +55,44 @@ async def handle_command(
         return _verbose(settings, session_id, command.args)
     if command.name == "tools":
         return _tools(settings, session_id, command.args)
+    if command.name == "memory":
+        return await _memory(memory_service)
+    if command.name == "recall":
+        return await _recall(memory_service, command.args)
     return None
+
+
+async def _memory(service: ServiceMemory | None) -> str:
+    """Handle /memory: service reachability, archive counts and shadow stats since start."""
+    if service is None:
+        return (
+            "Memory service: not configured (MEMORY_SERVICE_URL is empty).\n"
+            "Using the legacy summary + RAG memory only."
+        )
+    stats = await service.stats()
+    if stats is None:
+        reach = "Memory service: UNREACHABLE (calls are bounded by short timeouts)."
+    else:
+        reach = (
+            "Memory service: reachable. "
+            f"turns={stats.get('turns')} chunks={stats.get('chunks')} "
+            f"sessions={stats.get('sessions')} days={stats.get('days')} "
+            f"facts={stats.get('facts_active')}"
+        )
+    return f"{reach}\n{service.status_text()}"
+
+
+async def _recall(service: ServiceMemory | None, args: list[str]) -> str:
+    """Handle /recall <query>: one explicit search of the archive (capped text)."""
+    if service is None:
+        return "Memory service is not configured (MEMORY_SERVICE_URL is empty)."
+    query = " ".join(args).strip()
+    if not query:
+        return "Usage: /recall <what to look for in earlier conversations>"
+    text = await service.search(query)
+    if text is None:
+        return "Memory service is unavailable right now; try again later."
+    return text or "No matching memory."
 
 
 async def _status(settings: SessionSettings, session_id: str | int) -> str:
