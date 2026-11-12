@@ -173,6 +173,8 @@ Available variables:
 | `OLLAMA_NUM_PREDICT` | `-1` | Max tokens to generate per chat call (`-1` = uncapped) |
 | `OLLAMA_NUM_CTX` | empty | Optional context window override (tokens); empty keeps model default |
 | `OLLAMA_MAX_CONTINUATIONS` | `2` | Auto-continue when Ollama stops with `done_reason=length` |
+| `OLLAMA_RETRY_WAIT_SECONDS` | `90` | After a connection-type failure (e.g. Ollama restarting), wait up to this long for `/api/version` before retrying the chat call once |
+| `OLLAMA_RETRY_POLL_SECONDS` | `2` | Poll interval while waiting for Ollama to come back |
 | `MCP_CONFIG_PATH` | `<project>/mcp.json` | Local MCP server configuration |
 | `MAX_TOOL_ITERATIONS` | `8` | Maximum model/tool loops per request |
 | `MCP_READONLY` | `1` | Hide tools whose names appear to modify data |
@@ -183,6 +185,7 @@ Available variables:
 | `RAG_ENABLED` | `1` | Retrieve older relevant turns via embeddings |
 | `RAG_DIR` | `<project>/data/rag` | Per-session SQLite vector store directory |
 | `RAG_EMBED_MODEL` | `nomic-embed-text` | Embedding model on `OLLAMA_HOST` |
+| `RAG_EMBED_NUM_GPU` | `0` | GPU layers for the embedding model (`0` = CPU only, `-1`/empty = Ollama decides) |
 | `RAG_TOP_K` | `4` | Max retrieved chunks per prompt |
 | `RAG_MAX_CONTEXT_CHARS` | `4000` | Soft character budget for retrieved snippets |
 | `RAG_MIN_SCORE` | `0.25` | Drop weak cosine similarity matches |
@@ -365,10 +368,19 @@ Optional `.env` settings:
 RAG_ENABLED=1
 RAG_DIR=/path/to/privateai/data/rag
 RAG_EMBED_MODEL=nomic-embed-text
+RAG_EMBED_NUM_GPU=0
 RAG_TOP_K=4
 RAG_MAX_CONTEXT_CHARS=4000
 RAG_MIN_SCORE=0.25
 ```
+
+Embedding calls pass the Ollama option `num_gpu: 0` by default
+(`RAG_EMBED_NUM_GPU=0`), so `nomic-embed-text` runs on the CPU and never loads a
+second runner on the (integrated) GPU next to the chat model. Set
+`RAG_EMBED_NUM_GPU=-1` (or leave it empty) to let Ollama choose. Note that a
+model already resident with different options is reloaded on the next request,
+so run `ollama stop nomic-embed-text` once if it stays on the GPU after
+changing this setting.
 
 Set `RAG_ENABLED=0` to disable retrieval and indexing. Document/file corpus
 indexing is not implemented yet — RAG currently covers conversation history
@@ -377,6 +389,17 @@ only.
 Memory and RAG files are gitignored, permissioned for the local user, and may
 contain private conversation content. Store them on protected storage and back
 up `MEMORY_DIR` and `RAG_DIR` if they must survive host failure.
+
+### Ollama restarts and automatic retry
+
+If a chat call fails because Ollama dropped the connection or returned an HTTP
+5xx (typically while Ollama is being restarted), the agent waits for
+`GET /api/version` to answer again (every `OLLAMA_RETRY_POLL_SECONDS`, up to
+`OLLAMA_RETRY_WAIT_SECONDS`) and retries that one model call **once** per
+request. Timeouts, 4xx errors and tool errors are not retried, and tools that
+already ran are never re-executed. If the retry fails too, the bot replies
+`System Error: Ollama was unavailable or restarted while answering. Please
+resend your message in a minute.` (the failed turn is not stored in memory).
 
 ## Running PrivateAI
 

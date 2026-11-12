@@ -9,7 +9,8 @@ from contextlib import suppress
 from time import monotonic
 from typing import Any
 
-from ollama import AsyncClient
+import httpx
+from ollama import AsyncClient, ResponseError
 
 from .config import (
     MAX_TOOL_ITERATIONS,
@@ -19,6 +20,8 @@ from .config import (
     OLLAMA_MODEL,
     OLLAMA_NUM_CTX,
     OLLAMA_NUM_PREDICT,
+    OLLAMA_RETRY_POLL_SECONDS,
+    OLLAMA_RETRY_WAIT_SECONDS,
     OLLAMA_STUCK_WARN_SECONDS,
     OLLAMA_THINK,
     OLLAMA_TIMEOUT_SECONDS,
@@ -44,6 +47,91 @@ CONTINUE_PROMPT = (
     "Continue your previous reply exactly where you left off. "
     "Do not restart, apologize, or repeat text already written."
 )
+
+
+OLLAMA_UNAVAILABLE_MESSAGE = (
+    "System Error: Ollama was unavailable or restarted while answering. "
+    "Please resend your message in a minute."
+)
+
+# Connection-type failures that typically happen while Ollama is restarting.
+_RETRYABLE_CONNECTION_ERRORS: tuple[type[BaseException], ...] = (
+    httpx.RemoteProtocolError,
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ReadError,
+    ConnectionError,  # the ollama client re-raises httpx.ConnectError as this
+)
+
+
+class OllamaUnavailableError(Exception):
+    """Ollama stayed unreachable (or failed again) after the one allowed retry."""
+
+
+def _is_retryable_ollama_error(exc: BaseException) -> bool:
+    """True for disconnect/restart-type failures and Ollama HTTP 5xx responses."""
+    if isinstance(exc, ResponseError):
+        return exc.status_code >= 500
+    return isinstance(exc, _RETRYABLE_CONNECTION_ERRORS)
+
+
+async def _wait_for_ollama(host: str, max_wait: float, poll: float) -> bool:
+    """Poll GET {host}/api/version until Ollama answers or max_wait elapses."""
+    url = f"{host.rstrip('/')}/api/version"
+    deadline = monotonic() + max_wait
+    async with httpx.AsyncClient(timeout=5.0) as http:
+        while True:
+            try:
+                response = await http.get(url)
+                if response.status_code == 200:
+                    return True
+            except httpx.HTTPError:
+                pass
+            if monotonic() + poll > deadline:
+                return False
+            await asyncio.sleep(poll)
+
+
+async def _chat_with_retry(
+    client: AsyncClient,
+    *,
+    retry_state: dict[str, bool],
+    **kwargs: Any,
+) -> Any:
+    """Run one model call, retrying it once if Ollama dropped/restarted.
+
+    Only the failed model request is repeated (never tool calls). The retry
+    budget lives in ``retry_state`` so a single user request retries at most
+    once. Timeouts, 4xx errors and other exceptions propagate unchanged.
+    """
+    try:
+        return await _chat_with_monitoring(client, **kwargs)
+    except Exception as exc:
+        if not _is_retryable_ollama_error(exc):
+            raise
+        if retry_state.get("used"):
+            raise OllamaUnavailableError(str(exc)) from exc
+        retry_state["used"] = True
+        logger.warning(
+            "Ollama chat failed (%s: %s); waiting up to %.0fs for %s then retrying once",
+            type(exc).__name__,
+            exc,
+            OLLAMA_RETRY_WAIT_SECONDS,
+            OLLAMA_HOST,
+        )
+        if not await _wait_for_ollama(
+            OLLAMA_HOST, OLLAMA_RETRY_WAIT_SECONDS, OLLAMA_RETRY_POLL_SECONDS
+        ):
+            raise OllamaUnavailableError(
+                f"Ollama did not come back within {int(OLLAMA_RETRY_WAIT_SECONDS)}s"
+            ) from exc
+        logger.info("Ollama is reachable again; retrying the chat call")
+        try:
+            return await _chat_with_monitoring(client, **kwargs)
+        except Exception as retry_exc:
+            if _is_retryable_ollama_error(retry_exc):
+                raise OllamaUnavailableError(str(retry_exc)) from retry_exc
+            raise
 
 
 def _ollama_options() -> dict[str, Any] | None:
@@ -402,13 +490,16 @@ async def run_agent(
         chat_timeout,
     )
 
+    retry_state: dict[str, bool] = {}
+
     for iteration in range(MAX_TOOL_ITERATIONS):
         logger.info("Agent iteration %d/%d", iteration + 1, MAX_TOOL_ITERATIONS)
         if progress is not None:
             await progress("thinking", None)
         try:
-            response = await _chat_with_monitoring(
+            response = await _chat_with_retry(
                 client,
+                retry_state=retry_state,
                 model=model,
                 messages=messages,
                 tools=tools,
@@ -417,6 +508,12 @@ async def run_agent(
                 progress=progress,
                 verbose=verbose,
             )
+        except OllamaUnavailableError:
+            logger.exception("Ollama unavailable after retry; replying with an error")
+            if progress is not None:
+                await progress("responding", None)
+            # Not stored in memory/RAG: the user is asked to resend the message.
+            return OLLAMA_UNAVAILABLE_MESSAGE
         except TimeoutError:
             final_response = (
                 f"System Error: the model timed out after "
@@ -449,8 +546,9 @@ async def run_agent(
                     await progress("thinking", None)
                 messages.append({"role": "user", "content": CONTINUE_PROMPT})
                 try:
-                    response = await _chat_with_monitoring(
+                    response = await _chat_with_retry(
                         client,
+                        retry_state=retry_state,
                         model=model,
                         messages=messages,
                         tools=None,
@@ -459,6 +557,15 @@ async def run_agent(
                         progress=progress,
                         verbose=verbose,
                     )
+                except OllamaUnavailableError:
+                    logger.exception(
+                        "Ollama unavailable during continuation; returning partial reply"
+                    )
+                    pieces.append(
+                        "_(Reply may be incomplete: Ollama became unavailable "
+                        "while continuing.)_"
+                    )
+                    break
                 except TimeoutError:
                     break
                 message = response.message
