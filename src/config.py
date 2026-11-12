@@ -62,6 +62,54 @@ SESSION_SETTINGS_PATH = Path(
 MEMORY_RECENT_TURNS = int(os.getenv("MEMORY_RECENT_TURNS", "4"))
 MEMORY_SUMMARIZE_EVERY = int(os.getenv("MEMORY_SUMMARIZE_EVERY", "6"))
 MEMORY_MAX_CONTEXT_CHARS = int(os.getenv("MEMORY_MAX_CONTEXT_CHARS", "12000"))
+
+
+def _env_choice(name: str, default: str, allowed: set[str]) -> str:
+    """Read a lower-cased enum-like env var; unknown/empty values fall back to default."""
+    value = os.getenv(name, default).strip().lower() or default
+    return value if value in allowed else default
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    """Read a boolean env var (0/false/no/off = False)."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+# --- External memory service (see docs/memory-service-design.md) -------------------
+# legacy  = rolling summary + RAG (today's behaviour); service = tiny core context
+#           (fact profile + last N turns) and no summary/RAG. Keep `legacy` until the
+#           shadow-mode logs look good.
+MEMORY_BACKEND = _env_choice("MEMORY_BACKEND", "legacy", {"legacy", "service"})
+# Base URL of the memory service on the compose network. Empty = integration disabled.
+MEMORY_SERVICE_URL = os.getenv("MEMORY_SERVICE_URL", "").strip().rstrip("/")
+# Shared bearer token (also used for ${MEMORY_TOKEN} expansion in mcp.json headers).
+MEMORY_TOKEN = os.getenv("MEMORY_TOKEN", "").strip()
+# off    = never ask the service for recall
+# shadow = ask in the background and only LOG metadata (gate/hits/score/chars/ms)
+# on     = inject the service's gated recall block as a system message
+MEMORY_RECALL = _env_choice("MEMORY_RECALL", "shadow", {"off", "shadow", "on"})
+# on = expose the memory MCP tools (mcp.json server named MEMORY_MCP_SERVER) to the model.
+MEMORY_TOOLS = _env_choice("MEMORY_TOOLS", "off", {"off", "on"})
+# Name of the mcp.json server whose tools form the "memory" tool group.
+MEMORY_MCP_SERVER = os.getenv("MEMORY_MCP_SERVER", "memory").strip() or "memory"
+# 1 = also send every completed turn to the service (in addition to the JSONL).
+MEMORY_DUAL_WRITE = _env_flag("MEMORY_DUAL_WRITE", True)
+# Short timeouts (seconds): a slow/down service must never hold up a chat turn.
+MEMORY_RECALL_TIMEOUT = float(os.getenv("MEMORY_RECALL_TIMEOUT", "2.5") or "2.5")
+MEMORY_APPEND_TIMEOUT = float(os.getenv("MEMORY_APPEND_TIMEOUT", "3") or "3")
+MEMORY_TOOL_TIMEOUT = float(os.getenv("MEMORY_TOOL_TIMEOUT", "5") or "5")
+# Connecting an SSE MCP server (startup / reconnect) gives up after this long.
+MEMORY_SSE_CONNECT_TIMEOUT = float(os.getenv("MEMORY_SSE_CONNECT_TIMEOUT", "8") or "8")
+# Circuit breaker: after this many consecutive failures stop calling the service for a
+# cooldown (doubling up to MEMORY_BREAKER_MAX_COOLDOWN seconds) so a dead service costs nothing.
+MEMORY_BREAKER_FAILURES = int(os.getenv("MEMORY_BREAKER_FAILURES", "3") or "3")
+MEMORY_BREAKER_COOLDOWN = float(os.getenv("MEMORY_BREAKER_COOLDOWN", "30") or "30")
+MEMORY_BREAKER_MAX_COOLDOWN = float(os.getenv("MEMORY_BREAKER_MAX_COOLDOWN", "300") or "300")
+# Hard cap (chars) of the recall block injected in `on` mode.
+MEMORY_RECALL_MAX_CHARS = int(os.getenv("MEMORY_RECALL_MAX_CHARS", "700") or "700")
 RAG_ENABLED = os.getenv("RAG_ENABLED", "1").lower() not in {"0", "false", "no"}
 RAG_DIR = Path(os.getenv("RAG_DIR", PROJECT_ROOT / "data" / "rag"))
 RAG_EMBED_MODEL = os.getenv("RAG_EMBED_MODEL", "nomic-embed-text")
